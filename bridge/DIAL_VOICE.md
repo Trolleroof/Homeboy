@@ -3,9 +3,13 @@
 Dial voice number: **+1 218-231-5815**.
 
 Calls connect to Dial's managed voice agent and its Homeboy Context MCP. The
-agent can read harness readiness and submit an orange-block task plan. It cannot
-start motion. You review the plan in the local frontend and choose whether to
-run it. The Context MCP checks Dial's static bearer credential plus the live
+agent can read harness readiness, plan a taught task, read the plan back, and,
+after the caller confirms on the call that the workcell is set up and the path is
+clear, run it on the robot (`willow_run_plan`). It reports the vision-verified
+verdict through `willow_task_progress`, and `willow_stop` halts the robot
+immediately. The harness still requires an approved skill, a confident camera
+scene check and bounded replay. Set `DIAL_VOICE_EXECUTION=off` in
+`bridge/.env.local` to return to plan-only. The Context MCP checks Dial's static bearer credential plus the live
 inbound caller number and Dial number on every tool call. The only allowed
 caller is configured by `DIAL_VOICE_ALLOWED_CALLERS` in ignored
 `bridge/.env.local`.
