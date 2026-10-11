@@ -1,0 +1,82 @@
+# Willow prompt-to-action harness
+
+This version adds Codex tool calling and shared vector retrieval, a bounded SO-101 trajectory interpreter, scene checks, outcome evidence, and a prompting box to the existing Skillbook. Open **http://127.0.0.1:3217/#prompt** for the current running instance.
+
+This is a fixed-workcell taught-skill harness. Codex builds programs from validated demonstration trajectories. After a camera-verified success it saves a vector-indexed experience with its task, motor hash and evidence, and recalls that experience with the corresponding indexed demonstration. It does not learn a new grasp from scratch, compute IK for moved objects, or repair failed grasps autonomously. [Waddle's published architecture](https://www.waddlelabs.ai/research/introducing-waddle) includes agent-written programs and growing parameterized skills; this implementation provides a smaller skill-selection and execution loop. It has not achieved that generality.
+
+## Run it
+
+The project uses the existing calibrated LeRobot installation at `/Users/nikhi/SUDS/.venv/bin/python`. From `frontend/`, run `npm install` if needed, then `npx next dev -p 3217 -H 127.0.0.1`. The bridge is managed by **Connect bridge** and listens on 127.0.0.1:8621. Port 3000 is currently used by a different application.
+
+Install Codex CLI and run `codex login` with your ChatGPT account. The harness launches `codex app-server --stdio`, uses an ephemeral thread, and dispatches native `item/tool/call` requests. The installed 0.154.0 CLI and account login were checked on this Mac. `WILLOW_CODEX_MODEL` optionally overrides the account default model. This follows the [official app-server protocol](https://learn.chatgpt.com/docs/app-server); dynamic tools are experimental and protocol changes may require updating this client.
+
+The existing native EmbeddingGemma 2 server must be running on localhost:8622. The library's **Index video** action starts it automatically. Index the taught episode's pixels through the library before planning. Native video retrieval never falls back to labels or prompt embeddings. It uses the existing `datasets/willow_skills.sqlite3` database (`SUDS_LABELS_ROOT` overrides its directory), pinned model/revision and cosine vectors. Task contracts, approval, a 0.65 similarity threshold and 0.03 ambiguity margin gate executable matches. These thresholds are demo settings, not calibrated guarantees.
+
+Ollama must be running on localhost:11434. `ollama pull gemma3:4b` installs the default local vision/language model; it was installed during this task. The download is about 3.3 GB. `WILLOW_MODEL` can name another locally installed compatible vision model, but it needs the same checks before physical use. The Ollama API uses [structured JSON output and base64 images](https://docs.ollama.com/capabilities/structured-outputs).
+
+If USB ports are missing, **Connect bridge** starts an explicit offline planning bridge without opening buses or cameras. When both arms are plugged in, pressing it again restarts that offline bridge with the configured hardware. Neither a running bridge nor configured serial-port names establish hardware readiness. Live six-motor readings and a fresh wrist frame are required before execution. If a controller was already running with stale device handles, stop it through `/api/bridge/daemon/stop` before reconnecting.
+
+## First physical run
+
+1. Reconnect and power both SO-101 arms and the wrist camera. Keep the taught fixed scene and clear the follower path. Press **Connect bridge**.
+2. Teach a complete successful block task through the existing teaching controls. Stop and save it. Confirm the actual outcome and watch its video in the library.
+3. Under **Set up an executable taught skill**, import the correct episode with an accurate task description. This version accepts named-color block pick-and-place requests: for example, “Pick up the orange block and place it in the bin.” Pick-only holding requires a separate validated holding controller because this executor releases torque when finished. Episodes 0–1 are diagnostics and cannot execute.
+4. Review the import report. Values exceeding normalized limits by up to four units are explicitly clamped; larger violations reject the import. Approval is a separate operator action. The imported trajectory needs supervised physical validation, especially if it was clamped or retimed.
+5. Enter a prompt and press **Plan task**. The request must match an approved skill's object, color, operation and destination. Unsupported tasks are rejected locally. Codex calls `retrieve_skills`, `read_motor_state`, `read_example`, `read_robot_logs` and `build_motor_program`. The tool host requires inspection of the selected example, current telemetry and logs before building a plan. Only retrieved, approved skills with a matching object/color/action/destination can produce plans. An unindexed demonstration is not executable through retrieval.
+6. Disengage teaching. Align the follower to the displayed starting pose; all joint differences must be at most five normalized units. Confirm the original object/bin/camera layout and clear path, then press **Run on robot**.
+7. The harness compares the current camera scene with the taught start image and checks that it did not change while the model was thinking. Codex calls `execute_motor_program`, which invokes the existing controller. It then executes the local motion program and collects before, three sparse intermediate, and after images. One final local model call evaluates the visible outcome. Camera reports of success are provisional evidence, not ground truth. Occlusion or missing lift/release evidence must return uncertain.
+8. Torque releases at the final pose on completion or failure; support the arm as needed. STOP cuts torque. An e-stop requires inspection and reset; it never silently resumes a program. Inspect the actual block before accepting the camera assessment.
+
+## Control and inference budget
+
+The motor controller runs at the recorder's 30 Hz in the single serial-bus owner. Codex is never called per motor tick. A supported task uses one Codex planning turn and one Codex execution turn, plus two local vision calls. A Codex turn can involve several model requests as tools return results; the UI's turn count is not a billable-request count. Unsupported contracts use zero Codex calls after the local gate. Every Codex invocation uses your account allowance; there is no zero-rate-limit claim.
+
+Each Codex turn permits at most eight tool requests, with a 120-second planning deadline and 400-second execution deadline. No automatic retry is performed. The client uses an isolated configuration, no workspace environment, and disabled shell, app, browser, plugin and multi-agent features. Registered functions are the only robot dispatch path. The Codex tool host stays enabled because native dynamic tools require it.
+
+Measured real smoke check: one ping tool turn reported about 9,567 initial input tokens and 17 output tokens; its final response brought cumulative input to 19,187, including 9,344 cached input tokens. That is noticeable startup context even with unused features disabled. This is a usage observation, not a dollar-price or account-limit estimate. The harness records actual token usage from app-server events. Vector embedding, camera assessment and motor ticks use local compute.
+
+The interpreter uses the existing calibrated LeRobot units: five body joints in RANGE_M100_100 and the gripper in RANGE_0_100. It validates six finite joint values, increasing timestamps, and bounded duration. Segment timing preserves the recorded joint path and limits speed to 3 normalized units/s; per-tick changes are capped at 0.15 units (at a normal 30 Hz tick, at most 0.10 units). There is no Cartesian collision planner. A matching camera view and speed limit do not prove collision clearance.
+
+The follower must be idle/disengaged and have a six-motor read younger than 500 ms. Goal registers are seeded from the current pose before torque is enabled. Teaching and autonomy cannot own the follower simultaneously. Partial/stale reads, a control tick missing its 500 ms deadline, a camera read older than 500 ms, tracking differences above eight units, unsettled final pose, cancellation, or expired hold lease stop the program. Model calls time out at 70 seconds; a final pose hold expires after 90 seconds. Plans are single-use and expire after five minutes. No automatic physical retry is implemented.
+
+## Evidence and checks
+
+Skills, run events and images are written under `datasets/harness/`, outside the training dataset and ignored by Git. `runs.jsonl` stores ordered tool calls/results, errors, Codex token usage and local inference timing/token counts. `robot_experiences` in the shared SQLite DB stores successful prompt/motion/evidence associations; retrieval only returns experiences attached to an independently matched video and the current approved motion hash. Failed, blocked, uncertain or low-confidence outcomes cannot enter this table. These experiences provide reuse and context, not trained policy weights or new raw motor programs. Before/after images are visible in the result panel. The outcome retains `source=local_vision_model` and `operator_confirmed=false` so it cannot be mistaken for a measured contact/success sensor.
+
+Run focused tests from the project root:
+
+```sh
+/Users/nikhi/SUDS/.venv/bin/python -m unittest discover -s bridge/scripts -p 'test_*.py' -v
+/Users/nikhi/SUDS/.venv/bin/python bridge/scripts/check_local_model.py
+```
+
+The first command uses fake motor buses and cameras while exercising the actual recorder/interpreter/harness, vector-store behavior and JSON-RPC dispatch. `check_local_model.py` tests the local task-contract gate and vision verifier; it makes no Codex calls. The production planner uses Codex. Run the current hardware-free real integration check with:
+
+```sh
+/Users/nikhi/SUDS/.venv/bin/python bridge/scripts/check_codex.py
+```
+
+It calls the signed-in Codex account and the real video vector DB, uses a temporary approved copy of the catalog, and never exposes a motor execution tool. It writes `datasets/harness/codex-check.json`; it does not approve the persistent skill.
+
+The original model-only selector incorrectly chose a routine for unrelated requests. The contract gate now rejects those requests before inference. Do not remove it on the assumption that structured JSON guarantees semantic correctness.
+
+Current hardware limitation: neither configured USB serial device is present. The bridge runs in offline mode. Episode 2 is imported, **unapproved**, with 8 clamped joint samples and a speed-limited duration of approximately 142 seconds under the conservative 3-unit/s policy. Its physical task outcome is unverified. The next acceptance gate is a supervised, complete physical pick/place and a correct visual verdict; that has not been run.
+
+
+Latest verification: 27 automated tests passed, as did TypeScript, focused ESLint and the production frontend build. The real signed-in Codex planner retrieved the existing video vector (score 0.7307), read motor state and built the 43.83-second episode-2 program. That planning turn reported 30,016 cumulative input tokens (19,456 cached) and 148 output tokens. Its catalog approval was temporary; the persistent skill remains unapproved. The prompt panel was opened and checked against the live bridge. Hardware is still absent.
+
+A separate real Codex execution-tool check also passed: `execute_motor_program` entered the actual harness and recorder with fake motor buses and camera, returned a mocked successful vision verdict, released torque and wrote one experience to a temporary database. Evidence: `datasets/harness/codex-execution-check.json`. This verifies dispatch/controller/memory integration; it does not prove physical task completion or visual accuracy.
+
+Slow-motion update: the default and maximum replay speed are 3 normalized joint units/s. Custom slower speeds are enforced both in retiming and on every command; delayed ticks cannot jump more than 0.15 units. Existing imports derive their duration from the current policy, so plan displays and execution deadlines stay consistent. The original 43.83-second timing above is historical evidence from the 10-unit/s version; the current episode is about 141.99 seconds. These are software command limits, not certified physical speed, acceleration, force or collision limits.
+
+## Example readings, telemetry and log memory — 2026-10-11
+
+EmbeddingGemma 2 now retrieves both native video examples and semantic summaries of prior executions. The existing video threshold, ambiguity margin, task contract and operator approval still gate executable matches. Associated run history is recalled only for those retrieved skills with the same motion hash. Failure, uncertainty and blocked runs provide diagnostic evidence; they cannot create an executable skill or replace the video match. Camera-verified successes remain replay references, subject to the live scene and start-pose checks. This is retrieval and repetition of taught motion, not model-weight training or generalization to changed scenes.
+
+`read_example` exposes at most 24 samples per page plus an overview of the whole trajectory. It distinguishes recorded actions, actual `observation.state` joint readings, and the clamped, retimed replay targets. Imports retain these readings. For older imports the tool reads the original episode parquet and verifies that its action path still matches the imported trajectory. Missing measurements or incompatible observation joint order are reported as unavailable, rather than substituting actions for readings. The current episode has 309 measured samples.
+
+`read_motor_state` uses the recorder cache without opening the serial bus. It reports joint positions and freshness, cached temperatures and their age, camera freshness, hardware status, e-stop state and controller state. `read_robot_logs` reads bounded tails of the fixed recorder and embedding log files (up to 8 KiB and 20 lines each). Log text is untrusted diagnostic data, never executable instructions or proof of success.
+
+During replay, the existing 30 Hz serial-bus owner appends measured joints, commanded targets, tracking deltas and timestamps to a bounded 10,000-sample memory buffer. Before/during/after camera captures also save telemetry snapshots. After the motor session ends, the harness saves `<run-id>-evidence.json` in `datasets/harness/`, including the trace, snapshots, lifecycle/tool/error events, image references and recorder log tail. Full evidence is stored with its semantic summary in `robot_run_evidence` in the shared SQLite database. No embedding, model call or file write enters the motor tick. If embedding fails, the local evidence file survives, but that run is not claimed to be indexed; there is no automatic index retry.
+
+The 36 automated checks cover the actual recorder/harness with fake hardware, bounded evidence paging, missing readings, inspection requirements, failure recall, changed-motion rejection and evidence persistence during embedding outages. `datasets/harness/embedding-evidence-check.json` records a real native EmbeddingGemma round trip against a temporary copy of the video database: video score 0.7307, uncertain fixture history indexed and recalled, full fixture telemetry read back, no replay promotion and no physical execution. The production database was not populated with this fixture. The real signed-in Codex check passed all five planning tools, inspected a 24-sample page and 12-point trajectory overview from the 309 measured samples, and built the current 141.99-second program. Its approval was temporary and it had no execution tool; evidence is in `datasets/harness/codex-check.json`. The idle offline bridge was restarted with this implementation. Physical task completion remains untested while the arms are unavailable.
