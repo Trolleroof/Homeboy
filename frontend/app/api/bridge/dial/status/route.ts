@@ -48,13 +48,13 @@ export async function GET() {
     }
   } catch { /* bridge is currently offline */ }
 
-  let toolCalls: { event: string; caller: string; request_id?: string; accepted?: boolean; at?: string }[] = [];
+  let toolCalls: { event: string; caller: string; request_id?: string; accepted?: boolean; at?: string; score?: number }[] = [];
   try {
     const log = path.join(root, "..", "datasets", "dial-voice", "tools.jsonl");
     if (fs.existsSync(log)) toolCalls = fs.readFileSync(log, "utf8").trim().split("\n").slice(-10).map(line => {
       const event = JSON.parse(line);
       return { event: event.event, caller: (event.caller_hash as string | undefined)?.slice(0, 10) ?? "", request_id: event.request_id,
-        accepted: event.accepted, at: event.at };
+        accepted: event.accepted, at: event.at, score: typeof event.score === "number" ? event.score : undefined };
     }).reverse();
   } catch { /* malformed local audit entry is skipped as a whole */ }
   return NextResponse.json({ configured: !!key, number, context, bridge, toolCalls }, { headers: { "Cache-Control": "no-store" } });

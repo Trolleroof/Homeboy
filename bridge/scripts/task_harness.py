@@ -355,6 +355,8 @@ class TaskHarness:
                     "review_required": not bool(existing and existing.get("approved"))}
         if action == "do":
             return self._do(payload)
+        if action == "plan_direct":
+            return self._plan_direct(payload)
         if action == "approve":
             with self.lock:
                 if self.active:
@@ -380,7 +382,9 @@ class TaskHarness:
                     raise ValueError("Enter a prompt of 1–500 characters")
                 if not any(s["approved"] for s in self.catalog()):
                     raise ValueError("Import and approve a successful taught skill first")
-                if payload.get("source") in ("dial_sms", "dial_voice") and not re.fullmatch(r"[a-f0-9]{32}", str(payload.get("request_id", ""))):
+                if payload.get("source") == "dial_voice":
+                    raise ValueError("Phone calls plan with plan_direct; only direct plans may run from the phone")
+                if payload.get("source") == "dial_sms" and not re.fullmatch(r"[a-f0-9]{32}", str(payload.get("request_id", ""))):
                     raise ValueError("Phone planning requires a unique request ID")
                 self.plan = None
             else:
@@ -388,7 +392,11 @@ class TaskHarness:
                     raise ValueError("Plan missing or expired; submit your prompt again")
                 if payload.get("scene_confirmed") is not True:
                     raise ValueError("Confirm the original workcell layout and a clear path")
-                if self.plan.get("source") in ("dial_sms", "dial_voice") and self.plan.get("phone_confirmed") is not True:
+                if payload.get("requested_by") == "dial_voice" and not (self.plan.get("direct") and self.plan.get("source") == "dial_voice"):
+                    raise ValueError("The phone can only run a direct plan it requested")
+                if self.plan.get("source") == "dial_sms" and self.plan.get("sms_confirmed") is not True:
+                    raise ValueError("Wait for the customer's SMS confirmation before operator execution")
+                if self.plan.get("source") == "dial_voice" and self.plan.get("phone_confirmed") is not True:
                     raise ValueError("Wait for the customer's phone confirmation before operator execution")
             self.active = True
             self.cancel.clear()
@@ -396,16 +404,17 @@ class TaskHarness:
                         "mode": "physical", "result": None, "kind": "planning" if action == "plan" else "execution",
                         "request_id": payload.get("request_id") if action == "plan" else self.plan.get("request_id"),
                         "plan_id": None if action == "plan" else self.plan["id"]}
-            job = self._plan if action == "plan" else self._execute_codex
+            # A direct plan is already a fixed saved take; there is nothing for Codex to choose.
+            job = self._plan if action == "plan" else self._execute if self.plan.get("direct") else self._execute_codex
             threading.Thread(target=self._job, args=(job, payload), daemon=True).start()
             return {"ok": True, "run_id": self.run["id"]}
 
     MIN_DIRECT_SCORE = .7
 
-    def _do(self, payload):
-        """One step for the operator: retrieve the most similar saved take with
-        EmbeddingGemma, treat the request as approved, and replay it. Speed and
-        hold policy, the e-stop and every motion bound still apply."""
+    def _direct_plan(self, payload, approve):
+        """Retrieve the most similar saved take with EmbeddingGemma and build a
+        single-use plan that replays it. Never moves the robot or touches self.plan.
+        With approve=False the take must already be approved by the operator."""
         with self.lock:
             if self.active:
                 raise ValueError("A prompt job is already active")
@@ -426,12 +435,16 @@ class TaskHarness:
             raise ValueError("That request isn't a block pick-and-place this robot has been taught.")
         skill = next((s for s in self.catalog() if s["episode"] == best["episode"]), None)
         if skill is None:
+            if not approve:
+                raise ValueError("The closest saved take hasn't been imported and approved on the dashboard yet.")
             description = best.get("description") or prompt
             self.import_episode({"episode": best["episode"], "description": description})
             skill = next(s for s in self.catalog() if s["episode"] == best["episode"])
         if not contracts_compatible(requested, skill.get("contract") or task_contract(skill["description"])):
             raise ValueError(f"The closest saved take ('{skill['description']}') doesn't match that request.")
         if not skill["approved"]:
+            if not approve:
+                raise ValueError(f"The closest saved take ('{skill['description']}') hasn't been approved on the dashboard yet.")
             skill["approved"] = True  # the operator asked for this task to run
             (STORE / f'skill-{skill["episode"]}.json').write_text(json.dumps(skill))
         source_sha256 = skill["sha256"]
@@ -448,32 +461,58 @@ class TaskHarness:
         policy['speed_cap'] = policy['speed']
         policy['speed'] = min(policy['speed'], speed_for_duration(skill['frames'], 30, bounds=self.motion_bounds()))
         program = MotionProgram(skill["frames"], policy["speed"], bounds=self.motion_bounds())
+        plan = {"id": uuid.uuid4().hex, "at": time.time(), "prompt": prompt, "direct": True,
+                "skill_id": skill["id"], "sha256": skill["sha256"], "description": skill["description"],
+                "duration": round(program.duration, 2), "start_pose": skill["start_pose"],
+                "reason": "Closest saved take by EmbeddingGemma similarity.",
+                "retrieval": {"skill_id": skill["id"], "episode": best["episode"], "score": best["score"], "video_sha256": best.get("video_sha256")},
+                "speed": policy["speed"], "policy": {k: policy[k] for k in ("policy", "reason", "success_rate")}}
+        plan["historical_context"] = historical
+        plan["demonstration_source"] = example["demonstration_source"]
+        plan["execution_mode"] = "copied_measured_trajectory"
+        plan["source_sha256"] = source_sha256
+        plan["motion_source"] = "demonstration_measured_joints"
+        plan["copy_audit"] = skill['copy_audit']
+        plan['target_duration_s'] = 30
+        plan['speed_cap'] = policy['speed_cap']
+        plan["motion_file"] = f'{plan["id"]}-copied-motion.json'
+        (STORE / plan["motion_file"]).write_text(json.dumps({**plan, "frames": skill["frames"]}, allow_nan=False))
+        return plan
+
+    def _do(self, payload):
+        """One step for the operator: build a direct plan for the closest saved
+        take, treat the request as approved, and replay it. Speed and hold
+        policy, the e-stop and every motion bound still apply."""
+        plan = self._direct_plan(payload, approve=True)
+        plan["reason"] += " Run directly at the operator's request."
         with self.lock:
             if self.active:
                 raise ValueError("A prompt job is already active")
-            self.plan = {"id": uuid.uuid4().hex, "at": time.time(), "prompt": prompt, "direct": True,
-                         "skill_id": skill["id"], "sha256": skill["sha256"], "description": skill["description"],
-                         "duration": round(program.duration, 2), "start_pose": skill["start_pose"],
-                         "reason": "Closest saved take by EmbeddingGemma similarity; run directly at the operator's request.",
-                         "retrieval": {"skill_id": skill["id"], "score": best["score"], "video_sha256": best.get("video_sha256")},
-                         "speed": policy["speed"], "policy": {k: policy[k] for k in ("policy", "reason", "success_rate")}}
-            self.plan["historical_context"] = historical
-            self.plan["demonstration_source"] = example["demonstration_source"]
-            self.plan["execution_mode"] = "copied_measured_trajectory"
-            self.plan["source_sha256"] = source_sha256
-            self.plan["motion_source"] = "demonstration_measured_joints"
-            self.plan["copy_audit"] = skill['copy_audit']
-            self.plan['target_duration_s'] = 30
-            self.plan['speed_cap'] = policy['speed_cap']
-            self.plan["motion_file"] = f'{self.plan["id"]}-copied-motion.json'
-            (STORE / self.plan["motion_file"]).write_text(json.dumps({**self.plan, "frames": skill["frames"]}, allow_nan=False))
+            self.plan = plan
             self.active = True
             self.cancel.clear()
             self.run = {"id": uuid.uuid4().hex, "state": "queued", "events": [], "local_calls": 0, "codex_calls": 0,
-                        "mode": "physical", "result": None, "kind": "execution", "request_id": None, "plan_id": self.plan["id"]}
-            threading.Thread(target=self._job, args=(self._execute, {"plan_id": self.plan["id"]}), daemon=True).start()
-            return {"ok": True, "run_id": self.run["id"], "episode": skill["episode"], "score": best["score"],
-                    "description": skill["description"], "duration": self.plan["duration"]}
+                        "mode": "physical", "result": None, "kind": "execution", "request_id": None, "plan_id": plan["id"]}
+            threading.Thread(target=self._job, args=(self._execute, {"plan_id": plan["id"]}), daemon=True).start()
+            return {"ok": True, "run_id": self.run["id"], "episode": plan["retrieval"]["episode"], "score": plan["retrieval"]["score"],
+                    "description": plan["description"], "duration": plan["duration"]}
+
+    def _plan_direct(self, payload):
+        """Phone planning: the same closest-take plan as _do, but it does not
+        move. It waits as self.plan for the caller's spoken confirmation (or the
+        dashboard's Run). Unlike _do it never imports or approves a take, and
+        execution keeps the camera scene check because the caller can't see the arm."""
+        if payload.get("source") != "dial_voice" or not re.fullmatch(r"[a-f0-9]{32}", str(payload.get("request_id", ""))):
+            raise ValueError("Direct phone planning requires the Dial voice source and a unique request ID")
+        plan = self._direct_plan(payload, approve=False)
+        plan.update({"reason": plan["reason"] + " Requested by the verified Dial caller; waiting for spoken confirmation.",
+                     "source": "dial_voice", "request_id": payload["request_id"], "phone_confirmed": True, "sms_confirmed": False})
+        with self.lock:
+            if self.active:
+                raise ValueError("A prompt job is already active")
+            self.plan = plan
+        return {"ok": True, "plan_id": plan["id"], "description": plan["description"], "score": plan["retrieval"]["score"],
+                "duration": plan["duration"], "speed": plan["speed"], "policy": plan["policy"]}
 
     def _job(self, function, payload):
         try:
@@ -795,7 +834,8 @@ class TaskHarness:
                          "initial_state": self.recorder.motor_telemetry()})
         self.recorder.autonomy_preflight()
         before = self._snapshot("before")
-        if not plan.get("direct"):
+        # The operator watching the dashboard can skip this for "Run it"; a phone caller can't see the arm.
+        if not plan.get("direct") or plan.get("source") == "dial_voice":
             self.event("checking_scene")
             schema = {"type": "object", "properties": {"match": {"type": "boolean"}, "confidence": {"type": "number"}, "evidence": {"type": "string"}}, "required": ["match", "confidence", "evidence"]}
             scene = self._call("First image: taught skill starting scene. Second: live starting scene. "
