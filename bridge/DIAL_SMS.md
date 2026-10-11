@@ -1,8 +1,8 @@
-# Willow Dial SMS adapter
+# Homeboy Dial SMS adapter
 
 Dial carries the existing **teach once, recall by text** workflow. The Python
 sidecar listens to official `message.received` events, submits the text to
-Willow's existing Codex harness, sends an expiring RUN token, and reports the
+Homeboy's existing Codex harness, sends an expiring RUN token, and reports the
 result of the locally supervised execution. No new motion planner is added.
 
 ## Sponsor access and coupon
@@ -45,7 +45,7 @@ between Dial numbers. Outbound texts to regular phones require business 10DLC
 registration. For a live SMS demo, use an authorized second Dial number as the
 requester, or ask the Dial table for iMessage/WhatsApp access for a later channel
 adapter. This adapter only implements SMS. A regular phone sending a request
-does not establish that Willow's SMS reply can reach it.
+does not establish that Homeboy's SMS reply can reach it.
 
 The CLI stores its key in a private local file. The adapter reads
 `~/.local/share/dial/auth.v1.json`, falling back to legacy `auth.json`, respecting
@@ -66,26 +66,30 @@ Edit the ignored `bridge/.env.local`: set `WILLOW_SMS_ALLOWED_SENDERS` to the
 comma-separated E.164 sender numbers allowed to request this robot. For the
 hackathon SMS demo these should be authorized Dial numbers. Set `DIAL_NUMBER_ID`
 or `DIAL_NUMBER` if the account has multiple ready SMS numbers. Start the
-existing Willow UI and bridge using [HARNESS.md](HARNESS.md), then:
+existing Homeboy UI and bridge using [HARNESS.md](HARNESS.md), then:
 
 ```sh
 .sms-venv/bin/python bridge/scripts/dial_sms.py --check
 .sms-venv/bin/python bridge/scripts/dial_sms.py
 ```
 
-`--check` only reads the account, number and bridge. It is not a live SMS test.
+`--check` reads the account, number and bridge and validates the same sender and
+result-URL configuration as the listener. It excludes replaced numbers, reports
+whether the harness has approved skills and is idle, and does not mark the event
+stream or SMS delivery verified. It is not a live SMS test. Reply attempts time
+out after 15 seconds and remain unknown rather than being retried.
 The normal listener uses Dial SDK 0.40.2, verified against its installed source
 (`send_message(SendMessageParams(...))`, `new_events_connection()`).
 
 ## Customer and operator flow
 
-1. The authorized requester texts **Put the orange block in the bin** to Willow's Dial number.
-2. Willow plans through the same video retrieval, task contract, approval,
+1. The authorized requester texts **Put the orange block in the bin** to Homeboy's Dial number.
+2. Homeboy plans through the same video retrieval, task contract, approval,
    telemetry/example/log inspection and bounded-program tools as the prompt UI.
    An unapproved or unsupported task gets a refusal, without motion.
 3. The requester receives the matched task and **RUN XXXXXXXX**, valid for the
    remaining plan lifetime, at most five minutes.
-4. That same sender replies with the token. Willow records consent; this does
+4. That same sender replies with the token. Homeboy records consent; this does
    not move the robot.
 5. The operator sees the SMS confirmation in the prompt panel, checks the
    original workcell and start pose, and presses **Run on robot**. The button
@@ -147,3 +151,18 @@ Pass Hour 05 only after a real inbound event arrives. Pass Hour 06 only after
 a real phone receives the matched task/token and duplicate delivery causes no
 second planning/run. Hour 09 still requires independently validated physical
 execution and the operator's local check.
+
+## SDK and harness audit (October 11)
+
+The installed 0.40.2 SDK's authentication header, number deserialization and
+`send_message(SendMessageParams(...))` request format passed a mocked HTTP
+transport check. `uv pip check` reports compatible dependencies. All 70 harness
+tests passed, including the actual HTTP bridge planning/confirmation path with
+mocked model, delivery and motors; all 15 adapter tests passed in `.sms-venv`.
+
+The Dial SMS SDK and mocked transport passed local checks, but SMS delivery has
+not been exercised with a real message. Voice is configured separately; its
+number, tool connection, and local harness status are shown in the Homeboy
+frontend. Keep Dial credentials in ignored `bridge/.env.local`. A `kwpat-` token
+is for Keewano analytics and is not a Dial credential. Provider delivery and
+physical execution remain separate checks.

@@ -65,7 +65,7 @@ def task_contract(text):
     Novel tasks require teaching and extending this verified vocabulary first.
     """
     words = re.findall(r"[a-z]+|\d+", text.lower())
-    allowed = set("please can could would will you robot willow the a an my our your it now then and to into in on onto at up down back pick pickup lift grab take get put place set drop move carry transfer block cube orange red blue green yellow black white pink purple brown bin basket container tray table tabletop again do task for me thanks thank".split())
+    allowed = set("please can could would will you robot willow homeboy the a an my our your it now then and to into in on onto at up down back pick pickup lift grab take get put place set drop move carry transfer block cube orange red blue green yellow black white pink purple brown bin basket container tray table tabletop again do task for me thanks thank".split())
     if not words or any(word not in allowed for word in words):
         return None
     tokens = set(words)
@@ -273,16 +273,16 @@ class TaskHarness:
                     raise ValueError("Enter a prompt of 1–500 characters")
                 if not any(s["approved"] for s in self.catalog()):
                     raise ValueError("Import and approve a successful taught skill first")
-                if payload.get("source") == "dial_sms" and not re.fullmatch(r"[a-f0-9]{32}", str(payload.get("request_id", ""))):
-                    raise ValueError("SMS planning requires a unique request ID")
+                if payload.get("source") in ("dial_sms", "dial_voice") and not re.fullmatch(r"[a-f0-9]{32}", str(payload.get("request_id", ""))):
+                    raise ValueError("Phone planning requires a unique request ID")
                 self.plan = None
             else:
                 if not self.plan or payload.get("plan_id") != self.plan["id"] or time.time()-self.plan["at"] > 300:
                     raise ValueError("Plan missing or expired; submit your prompt again")
                 if payload.get("scene_confirmed") is not True:
                     raise ValueError("Confirm the original workcell layout and a clear path")
-                if self.plan.get("source") == "dial_sms" and self.plan.get("sms_confirmed") is not True:
-                    raise ValueError("Wait for the customer's SMS confirmation before operator execution")
+                if self.plan.get("source") in ("dial_sms", "dial_voice") and self.plan.get("phone_confirmed") is not True:
+                    raise ValueError("Wait for the customer's phone confirmation before operator execution")
             self.active = True
             self.cancel.clear()
             self.run = {"id": uuid.uuid4().hex, "state": "queued", "events": [], "local_calls": 0, "codex_calls": 0,
@@ -486,8 +486,10 @@ class TaskHarness:
                                  "duration": round(program.duration, 2), "start_pose": selected["start_pose"], "reason": args["reason"],
                                  "retrieval": retrieved[selected["id"]], "speed": policy["speed"],
                                  "policy": {k: policy[k] for k in ("policy", "reason", "success_rate")}})
-                if payload.get("source") == "dial_sms":
-                    proposed.update({"source": "dial_sms", "request_id": payload["request_id"], "sms_confirmed": False})
+                if payload.get("source") in ("dial_sms", "dial_voice"):
+                    proposed.update({"source": payload["source"], "request_id": payload["request_id"],
+                                     "phone_confirmed": payload["source"] == "dial_voice",
+                                     "sms_confirmed": False})
                 return {"plan_id": proposed["id"], "motor_program": {"joints": list(JOINTS), "frames": len(selected["frames"]),
                         "duration_s": proposed["duration"], "sha256": selected["sha256"], "controller_hz": 30, "max_speed": MAX_SPEED, "replay_speed": policy["speed"], "speed_policy": policy["reason"], "max_command_step": MAX_COMMAND_STEP}, "execution_requires_scene_confirmation": True}
             raise ValueError("Unknown robot tool")

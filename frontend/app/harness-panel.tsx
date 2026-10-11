@@ -9,9 +9,10 @@ type Harness = {
   active: boolean; model: string; model_ready: boolean; vision_model: string; vision_ready: boolean; memory: { backend: string; experiences: number; demonstrations: number }; skills: Skill[];
   motors: { positions: Record<string, number>; age_s: number };
   motion: { active: boolean; elapsed_s: number; duration_s: number | null };
-  plan: { id: string; description: string; reason: string; duration: number; start_pose: Record<string, number>; source?: string; sms_confirmed?: boolean; speed?: number; policy?: { policy: string; reason: string; success_rate: number | null } } | null;
+  plan: { id: string; description: string; reason: string; duration: number; start_pose: Record<string, number>; source?: string; sms_confirmed?: boolean; phone_confirmed?: boolean; speed?: number; policy?: { policy: string; reason: string; success_rate: number | null } } | null;
   run: { id: string; state: string; local_calls: number; codex_calls: number; result: string | null; events: { event: string; at: number; error?: string; reason?: string; evidence?: string; tool?: string; result?: unknown; arguments?: unknown; reply?: string; usage?: { total: { inputTokens: number; outputTokens: number; cachedInputTokens: number } } }[]; verification?: { evidence: string; confidence: number } } | null;
 };
+type DialStatus = { configured: boolean; number: string; context: { connected: boolean; tools: number; error: string }; bridge: { online: boolean; active: boolean; approvedSkills: number; motorsFresh: boolean }; toolCalls: { event: string; caller: string; request_id?: string; accepted?: boolean; at?: string }[] };
 
 export default function HarnessPanel() {
   const [status, setStatus] = useState<Harness | null>(null);
@@ -23,6 +24,7 @@ export default function HarnessPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [offline, setOffline] = useState(false);
+  const [dial, setDial] = useState<DialStatus | null>(null);
   const refresh = useCallback(async () => {
     try {
       const response = await fetch("/api/bridge/harness/status", { cache: "no-store" });
@@ -43,6 +45,16 @@ export default function HarnessPanel() {
     void loop();
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [refresh]);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try { const response = await fetch("/api/bridge/dial/status", { cache: "no-store" }); const data = await response.json(); if (!cancelled) setDial(data); }
+      catch { if (!cancelled) setDial(null); }
+      if (!cancelled) window.setTimeout(poll, 4000);
+    };
+    void poll();
+    return () => { cancelled = true; };
+  }, []);
   async function command(action: string, body: Record<string, unknown>) {
     setBusy(true); setError("");
     try {
@@ -63,6 +75,13 @@ export default function HarnessPanel() {
     <div className="card-topline"><span className="step-tag">PROMPT → ACTION → CHECK</span><span className="harness-cost">CODEX PLANNING · LOCAL MOTOR CONTROL</span></div>
     <div className="harness-heading"><div><h2>Run from a prompt</h2><p>Codex plans from approved episodes. Motors and vision run locally on the bridge.</p></div><span className={`connection-pill ${motorsFresh ? "connected" : ""}`}><span className="pulse" />{motorsFresh ? "Motors live" : "Offline"}</span></div>
     {offline && <p className="harness-alert">Harness offline. Connect the bridge to import episodes and plan.</p>}
+    <div className="dial-card" aria-label="Dial phone connection">
+      <div className="dial-card-heading"><div><span className="step-tag">CALL HOMEBOY</span><h3>{dial?.number || "Loading Dial number…"}</h3><p>Call this number to ask Homeboy about the harness or request a taught task plan.</p></div><a className="quiet-button" href={`tel:${dial?.number ?? ""}`}>Call ↗</a></div>
+      <div className="dial-status-grid"><span><i className={dial?.configured ? "up" : "down"} />Dial key {dial?.configured ? "ready" : "missing"}</span><span><i className={dial?.context.connected ? "up" : "down"} />Voice tools {dial?.context.connected ? `${dial.context.tools} connected` : "not connected"}</span><span><i className={dial?.bridge.online ? "up" : "down"} />Harness {dial?.bridge.online ? "online" : "offline"}</span><span><i className={dial?.bridge.approvedSkills ? "up" : "down"} />Approved taught skills {dial?.bridge.approvedSkills ?? 0}</span><span><i className={dial?.bridge.motorsFresh ? "up" : "down"} />Motors {dial?.bridge.motorsFresh ? "live" : "not verified"}</span></div>
+      {dial?.context.error && <p className="dial-note">Dial: {dial.context.error}</p>}
+      <details className="dial-activity"><summary>Did the voice agent reach Homeboy? {dial?.toolCalls.length ? ` · ${dial.toolCalls.length} recent tool call(s)` : " · No Homeboy tool calls recorded yet"}</summary>{dial?.toolCalls.length ? <ol>{dial.toolCalls.map((event, index) => <li key={`${event.event}-${event.at}-${index}`}><strong>{event.event.replaceAll("_", " ")}</strong>{event.accepted !== undefined ? ` · ${event.accepted ? "plan request accepted" : "plan request refused"}` : " · read-only"}{event.request_id && <code> · {event.request_id.slice(0, 8)}</code>}</li>)}</ol> : <p>Call the number. Homeboy tool calls will appear here after Dial invokes the harness tools.</p>}</details>
+      <p className="dial-note">Phone agent can inspect status and submit plans. You must review the plan and start any robot motion from this page.</p>
+    </div>
     <div className="harness-actions"><span>Reconnect and power both arms for physical execution.</span><button className="quiet-button" disabled={!!active || !!status?.motion.active} onClick={async () => {
       setBusy(true); setError("");
       try {
@@ -84,6 +103,7 @@ export default function HarnessPanel() {
       <p>One bounded routine · approximately {Math.ceil(status.plan.duration)} seconds · plan expires in 5 minutes.</p>
       {status.plan.policy && <p>Replay speed {status.plan.speed} units/s from Keewano run history: {status.plan.policy.reason}</p>}
       {status.plan.source === "dial_sms" && <p role="status">{awaitingSMS ? "Waiting for the customer's RUN confirmation by text." : "Customer confirmed by text. Check the workcell below before running."}</p>}
+      {status.plan.source === "dial_voice" && <p role="status">Requested by the verified Dial caller. Review the plan and workcell here before choosing whether to run.</p>}
       <details><summary>Align the follower to its starting pose</summary><div className="motor-grid">{Object.entries(status.plan.start_pose).map(([joint, value]) => <span key={joint}>{joint.replace(".pos", "")}<b>{value.toFixed(1)}</b></span>)}</div><p>Use the taught starting pose. The controller refuses a difference above 5 normalized units.</p></details>
       <label className="harness-check"><input type="checkbox" checked={confirmed} onChange={e => setConfirmedPlanId(e.target.checked ? status.plan!.id : "")} />The block, bin and camera are in the taught positions; the path is clear and I am at the stop.</label>
       <button className="primary-button" disabled={!!active || !confirmed || !motorsFresh || awaitingSMS} onClick={() => void command("run", { plan_id: status.plan!.id, scene_confirmed: confirmed })}>Run on robot ↗</button>
