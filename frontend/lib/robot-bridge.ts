@@ -98,6 +98,7 @@ export async function start(task: string) {
     fs.mkdirSync(path.join(root, "logs"), { recursive: true });
     state.log = [];
     const child = spawn(python, args, { cwd: root, env: { ...process.env,
+      HOMEBOY_CODEX_MODEL: process.env.HOMEBOY_CODEX_MODEL ?? "gpt-6.1-sol",
       HF_LEROBOT_CALIBRATION: path.join(os.homedir(), ".cache/huggingface/lerobot/calibration"),
       PYTHONUNBUFFERED: "1" }, stdio: ["pipe", "pipe", "pipe"] });
     state.child = child;
