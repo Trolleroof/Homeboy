@@ -17,9 +17,17 @@ type RecorderStatus = {
   saved_episodes: number;
   offline?: boolean;
   message?: string;
-  teleop?: { ready?: boolean; engaged?: boolean; record_ready?: boolean };
+  teleop?: { ready?: boolean; engaged?: boolean; record_ready?: boolean; worst?: number; worst_joint?: string };
+  hardware?: { teleop?: { motors_ok?: number; motors_total?: number }; follower?: { motors_ok?: number; motors_total?: number } };
   data_quality?: { ready?: boolean; issues?: string[]; camera_streaming?: Record<string, boolean> };
-  cameras?: string[];
+  estop?: { engaged?: boolean; reason?: string };
+  calibration?: Record<string, unknown> | null;
+  delta?: {
+    joints?: Record<string, { follower: number; leader: number; delta: number }>;
+    max?: number;
+    limit?: number;
+  };
+  motors?: { positions?: Record<string, number>; age_s?: number | null };
 };
 
 type Skill = {
@@ -64,6 +72,10 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const [forcedCameras, setForcedCameras] = useState<Record<string, boolean>>({});
   const [feedReloads, setFeedReloads] = useState<Record<string, number>>({});
+  const [overheadIndex, setOverheadIndex] = useState(0);
+  const [cameraSaving, setCameraSaving] = useState(false);
+  const [cameraNotice, setCameraNotice] = useState("");
+  const [cameraConfigLoaded, setCameraConfigLoaded] = useState(false);
   const savedCount = useRef<number | null>(null);
   const skillToIndex = useRef<string | null>(null);
 
@@ -98,7 +110,7 @@ export default function Home() {
       const next = await response.json() as RecorderStatus;
       if (!response.ok || next.offline) {
         setStatus((current) => ({ ...current, offline: true }));
-        return;
+        return false;
       }
       setStatus(next);
       if (savedCount.current === null) savedCount.current = next.saved_episodes;
@@ -120,19 +132,35 @@ export default function Home() {
           }).catch((reason: unknown) => setError((reason as Error).message));
         }
       }
+      return true;
     } catch {
       setStatus((current) => ({ ...current, offline: true }));
+      return false;
     }
   }, [refreshLibrary, indexVideo]);
 
   useEffect(() => {
-    const initial = window.setTimeout(() => {
-      void refreshStatus();
-      void refreshLibrary();
-    }, 0);
-    const timer = window.setInterval(() => void refreshStatus(), 900);
-    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+    let cancelled = false;
+    let timer = 0;
+    const loop = async () => {
+      const online = await refreshStatus();
+      if (cancelled) return;
+      timer = window.setTimeout(loop, online ? 900 : 5000);
+    };
+    void refreshLibrary();
+    void loop();
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [refreshStatus, refreshLibrary]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/bridge/config/cameras", { cache: "no-store" }).then((response) => response.json()).then((body: { cameras?: Array<{ name: string; index: number }> }) => {
+      const overhead = body.cameras?.find((camera) => camera.name === "overhead");
+      if (!cancelled && overhead) setOverheadIndex(overhead.index);
+      if (!cancelled) setCameraConfigLoaded(true);
+    }).catch(() => { if (!cancelled) setCameraConfigLoaded(true); });
+    return () => { cancelled = true; };
+  }, []);
 
   const call = useCallback(async (endpoint: string, body?: Record<string, unknown>) => {
     const response = await fetch(`/api/bridge/${endpoint}`, {
@@ -195,6 +223,26 @@ export default function Home() {
       setNotice("");
     } catch (reason) { setNotice(""); setError((reason as Error).message); }
     finally { setBusy(false); }
+    throw new Error("The robot bridge did not become ready. Check the local Homeboy bridge and device connections.");
+  }
+
+  async function syncArms() {
+    if (!syncAvailable) return;
+    const approved = window.confirm(
+      "Sync arms will move the follower smoothly to the leader's current pose over about 2 seconds, then leave teleop engaged. Clear the follower's path and keep a hand near STOP. Continue?",
+    );
+    if (!approved) return;
+    setBusy(true); setError(""); setNotice("Syncing the follower to the leader over about 2 seconds…");
+    try {
+      await call("recorder/sync", { confirmed: true });
+      const current = await waitFor((next) => next.teleop?.engaged === true && next.teleop?.ready === true, 10_000);
+      if (!current.teleop?.ready) throw new Error("Sync completed, but measured joint gaps are still above the 25-unit limit. Check follower motion and alignment.");
+      setNotice("Arms synced. Teleop is engaged and within the tracking limit.");
+    } catch (reason) {
+      setError((reason as Error).message);
+      setNotice("");
+      await refreshStatus();
+    } finally { setBusy(false); }
   }
 
   async function startTeaching() {
@@ -296,6 +344,9 @@ export default function Home() {
   const bridgeOnline = !status.offline;
   const preflightReady = bridgeOnline && status.teleop?.ready === true && status.data_quality?.ready === true;
   const linked = preflightReady && status.teleop?.engaged === true;
+  const syncAvailable = bridgeOnline && status.state === "idle" && !status.teleop?.engaged && !status.estop?.engaged
+    && !status.calibration && (status.hardware?.teleop?.motors_ok ?? 0) === 6
+    && (status.hardware?.follower?.motors_ok ?? 0) === 6 && Object.keys(status.delta?.joints ?? {}).length === 6;
   const shortTime = `${Math.floor(status.elapsed_s / 60).toString().padStart(2, "0")}:${Math.floor(status.elapsed_s % 60).toString().padStart(2, "0")}`;
   const wristStreaming = bridgeOnline && (status.data_quality?.camera_streaming?.wrist === true || forcedCameras.wrist === true);
   const overheadStreaming = bridgeOnline && (status.data_quality?.camera_streaming?.overhead === true || forcedCameras.overhead === true);
@@ -313,6 +364,9 @@ export default function Home() {
           <a className="nav-item" href="#library"><span className="nav-icon">▧</span>Saved<span className="nav-count">{library.length}</span></a>
           <button type="button" className="nav-item calibration-nav" disabled={busy} onClick={() => setCalibrationOpen(true)}><span className="nav-icon" aria-hidden="true">↻</span>Calibrate</button>
         </nav>
+        <button className="rail-sync-button" type="button" disabled={!syncAvailable || busy} onClick={() => void syncArms()} title={syncAvailable ? "Move follower to the leader's current pose and engage teleop" : "Sync is available when both arms are connected, idle, disengaged, and reporting six fresh joints"}>
+          <span aria-hidden="true">↻</span><b>{busy && notice.startsWith("Syncing") ? "Syncing arms…" : "Sync arms"}</b>
+        </button>
         <div className="rail-spacer" />
       </aside>
 
@@ -343,6 +397,7 @@ export default function Home() {
             <div className="teach-main">
             <article className="card teach-card">
               <div className="card-topline"><span className="step-tag">TEACH</span><span className="tiny-live"><i className={recording ? "active" : ""} />{recording ? "REC" : "READY"}</span></div>
+              {bridgeOnline && <div className={`sync-check ${status.teleop?.ready ? "sync-check-ready" : ""}`}><span className="sync-check-led" /><div><strong>{status.teleop?.ready ? "Leader and follower aligned" : status.teleop?.worst_joint ? `Align ${status.teleop.worst_joint.replaceAll("_", " ")}` : "Waiting for fresh arm readings"}</strong><small>{status.teleop?.ready ? "Within the 25-unit tracking limit" : typeof status.teleop?.worst === "number" ? `Largest gap ${status.teleop.worst.toFixed(1)} / 25 units · move the leader or follower by hand until all joint gaps are under 25` : "Both arms must report fresh readings before teleop can start"}</small></div><span className="sync-motor-count">L {status.hardware?.teleop?.motors_ok ?? 0}/{status.hardware?.teleop?.motors_total ?? 6} · F {status.hardware?.follower?.motors_ok ?? 0}/{status.hardware?.follower?.motors_total ?? 6}</span></div>}
               <label className="field-label" htmlFor="skill-description">Name it</label>
               <textarea id="skill-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Block into the bin" rows={2} disabled={recording || pending} />
               <div className="teach-bottom">
@@ -360,6 +415,13 @@ export default function Home() {
                 <figure className="camera-frame wrist-frame"><figcaption><span className={`camera-led ${wristStreaming ? "on" : ""}`} /><strong>WRIST</strong><small>{wristStreaming ? "LIVE" : "WAIT"}</small>{wristStreaming && <button type="button" className="camera-reconnect" onClick={() => setFeedReloads((prev) => ({ ...prev, wrist: (prev.wrist ?? 0) + 1 }))}>Reconnect</button>}</figcaption>{wristStreaming ? <MjpegStream key={`wrist-${feedReloads.wrist ?? 0}`} src="/api/bridge/stream/wrist" alt="Live wrist camera" /> : <div className="camera-placeholder"><CameraMark /><span>{bridgeOnline ? "No picture yet" : "Robot is off"}</span><button type="button" className="camera-connect" disabled={busy} onClick={() => bridgeOnline ? setForcedCameras((prev) => ({ ...prev, wrist: true })) : void connectCameras()}>{bridgeOnline ? "Reconnect feed" : "Connect cameras"}</button></div>}</figure>
                 <figure className="camera-frame wrist-frame"><figcaption><span className={`camera-led ${overheadStreaming ? "on" : ""}`} /><strong>OVERHEAD</strong><small>{overheadStreaming ? "LIVE" : "WAIT"}</small>{overheadStreaming && <button type="button" className="camera-reconnect" onClick={() => setFeedReloads((prev) => ({ ...prev, overhead: (prev.overhead ?? 0) + 1 }))}>Reconnect</button>}</figcaption>{overheadStreaming ? <MjpegStream key={`overhead-${feedReloads.overhead ?? 0}`} src="/api/bridge/stream/overhead" alt="Live overhead camera" /> : <div className="camera-placeholder"><CameraMark /><span>{bridgeOnline ? "No picture yet" : "Robot is off"}</span><button type="button" className="camera-connect" disabled={busy} onClick={() => bridgeOnline ? setForcedCameras((prev) => ({ ...prev, overhead: true })) : void connectCameras()}>{bridgeOnline ? "Reconnect feed" : "Connect cameras"}</button></div>}</figure>
               </div>
+              {cameraConfigLoaded && <div className="camera-index-control"><label htmlFor="overhead-index">Overhead camera index</label><select id="overhead-index" value={overheadIndex} disabled={bridgeOnline || cameraSaving} onChange={(event) => setOverheadIndex(Number(event.target.value))}>{[0, 1, 2, 3, 4, 5, 6, 7].map((index) => <option key={index} value={index}>{index}{index === 1 ? " · currently used by wrist" : ""}</option>)}</select><button className="quiet-button" disabled={bridgeOnline || cameraSaving} onClick={() => {
+                setCameraSaving(true); setCameraNotice("");
+                void fetch("/api/bridge/config/cameras", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ overheadIndex }) }).then(async (response) => {
+                  const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Could not save camera mapping.");
+                  setCameraNotice(`Saved overhead camera index ${overheadIndex}.`);
+                }).catch((reason: Error) => setCameraNotice(reason.message)).finally(() => setCameraSaving(false));
+              }}>{cameraSaving ? "Saving…" : "Save index"}</button><span>{cameraNotice || (bridgeOnline ? "Camera map is active; stop and restart the recorder to apply index changes." : "Choose the device index assigned to your overhead camera.")}</span></div>}
             </section>
             </div>
           </section>

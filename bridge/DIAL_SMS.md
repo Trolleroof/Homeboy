@@ -73,7 +73,11 @@ existing Homeboy UI and bridge using [HARNESS.md](HARNESS.md), then:
 .sms-venv/bin/python bridge/scripts/dial_sms.py
 ```
 
-`--check` only reads the account, number and bridge. It is not a live SMS test.
+`--check` reads the account, number and bridge and validates the same sender and
+result-URL configuration as the listener. It excludes replaced numbers, reports
+whether the harness has approved skills and is idle, and does not mark the event
+stream or SMS delivery verified. It is not a live SMS test. Reply attempts time
+out after 15 seconds and remain unknown rather than being retried.
 The normal listener uses Dial SDK 0.40.2, verified against its installed source
 (`send_message(SendMessageParams(...))`, `new_events_connection()`).
 
@@ -147,3 +151,22 @@ Pass Hour 05 only after a real inbound event arrives. Pass Hour 06 only after
 a real phone receives the matched task/token and duplicate delivery causes no
 second planning/run. Hour 09 still requires independently validated physical
 execution and the operator's local check.
+
+## SDK and harness audit (October 11)
+
+The installed 0.40.2 SDK's authentication header, number deserialization and
+`send_message(SendMessageParams(...))` request format passed a mocked HTTP
+transport check. `uv pip check` reports compatible dependencies. All 70 harness
+tests passed, including the actual HTTP bridge planning/confirmation path with
+mocked model, delivery and motors; all 15 adapter tests passed in `.sms-venv`.
+
+The Dial SMS SDK and mocked transport passed local checks, but SMS delivery has
+not been exercised with a real message. Voice is configured separately; its
+number, tool connection, and local harness status are shown in the Homeboy
+frontend. Keep Dial credentials in ignored `bridge/.env.local`. A `kwpat-` token
+is for Keewano analytics and is not a Dial credential. Provider delivery and
+physical execution remain separate checks.
+
+## Run history and stats over SMS
+
+Questions about past runs ("how is the orange block task doing?", "show logs", "why did it fail?", "stats") go to the bridge's read-only `POST /harness/insights` endpoint, not the planner. The question is matched against the indexed demonstration videos (EmbeddingGemma). Homeboy replies with that skill's recent Keewano outcomes, success rate (including for the same video), tracking error, motor temperature, next replay speed, top failure reasons and the log of the latest run that didn't succeed. No request, plan or run is created. It works while a task is pending, and an unavailable Keewano is reported without retrying.

@@ -17,7 +17,7 @@ class VideoOnlyRecall(unittest.TestCase):
                       "description": "a cat sleeping on a sofa", "sha256": "motion"}
         with self.memory.connect() as db:
             db.execute("CREATE TABLE skills (repo_id TEXT, episode_index INTEGER, description TEXT, embedding TEXT)")
-            db.execute("CREATE TABLE video_embeddings (repo_id TEXT, episode_index INTEGER, embedding TEXT, model TEXT, revision TEXT)")
+            db.execute("CREATE TABLE video_embeddings (repo_id TEXT, episode_index INTEGER, embedding TEXT, model TEXT, revision TEXT, sample_sha256 TEXT)")
             db.execute("INSERT INTO skills VALUES (?,?,?,?)", ("homeboy/speedhacks-wrist-v1", 2, self.skill["description"], json.dumps(self.vector)))
 
     def search(self):
@@ -28,7 +28,7 @@ class VideoOnlyRecall(unittest.TestCase):
 
     def index(self, revision=REVISION):
         with self.memory.connect() as db:
-            db.execute("INSERT INTO video_embeddings VALUES (?,?,?,?,?)", ("homeboy/speedhacks-wrist-v1", 2, json.dumps(self.vector), MODEL, revision))
+            db.execute("INSERT INTO video_embeddings VALUES (?,?,?,?,?,?)", ("homeboy/speedhacks-wrist-v1", 2, json.dumps(self.vector), MODEL, revision, "video-2"))
 
     def test_labels_catalog_and_experience_cannot_replace_unindexed_video(self):
         with self.memory.connect() as db:

@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 1,
+  "version": 1538559753,
+  "eventCount": 35,
+  "gzipDataBase64": "H4sIAAAAAAAA/02S624TMRCFvYsEmiXbEKkvVJZAKhopxEv/W95pY8WxF9tbZd+Pa6Hcabnf4TmY9bYR/zzH34zPHPk+ZPPG8CBcwCphDwB2DtGE28pQ9RAGM2dXddg1gcSEPYIB0QVJGom/xB7DFgk3GieCsoajTNkTuDbH4BQeCX2nQTrQpGMYbcTS1lxahyl7+h86FUEuupHPIOdLpTVHjTKaOoHRTl07S9Qc7zXoo/ochhfqLSdMtPMCtqa2czJeo2wi9hKGvcQbKRGrDnsFGRcHGFoebJ2w15CV1upCaN11vIG8Kzd8wt72wE2hIvAOsrFz1hVaeJ+wUzIcsN4TlJFspz5lZwBl48zYUHfK3nfdSzT+ru/KD3BlT68K68Nl9hEGE+EMej8+igF/gqx3OxF+kbDPXWy1Fi2vyUpJyILGf4G8h/bRVUpS21cYTcW6dEIulTm84L4RJ9aEWlfiqi5S9h3y69rKJVZzFN6ahP2A/DxTbhsnMWE/4Wp8bWa1km3CfsFoojzNaGMi3s9kSNlv2D5/vbDmQFW0OsaLP5uV6GPsUlp/YbhP95aL7tf0e/0DFpPCB3YCAAA=",
+  "events": [
+    {
+      "id": 2500,
+      "name": "RunStarted",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2501,
+      "name": "AgentKind",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2502,
+      "name": "PromptIntent",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2503,
+      "name": "RunCompleted",
+      "type": 3,
+      "dataType": "bool"
+    },
+    {
+      "id": 2504,
+      "name": "RunDurationSec",
+      "type": 2,
+      "dataType": "uint"
+    },
+    {
+      "id": 2505,
+      "name": "RetrievalQueried",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2506,
+      "name": "RetrievalTopScore",
+      "type": 2,
+      "dataType": "uint"
+    },
+    {
+      "id": 2507,
+      "name": "RetrievalMatched",
+      "type": 3,
+      "dataType": "bool"
+    },
+    {
+      "id": 2508,
+      "name": "SkillSelected",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2509,
+      "name": "ApprovalRequested",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2510,
+      "name": "ApprovalGranted",
+      "type": 3,
+      "dataType": "bool"
+    },
+    {
+      "id": 2511,
+      "name": "MotionExecuted",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2512,
+      "name": "MotionSucceeded",
+      "type": 3,
+      "dataType": "bool"
+    },
+    {
+      "id": 2513,
+      "name": "SafetyStop",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2514,
+      "name": "ToolCalled",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2515,
+      "name": "ToolSucceeded",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2516,
+      "name": "ToolFailed",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2517,
+      "name": "ErrorClass",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2518,
+      "name": "StepLatencyMs",
+      "type": 2,
+      "dataType": "uint"
+    },
+    {
+      "id": 2519,
+      "name": "TurnEnded",
+      "type": 2,
+      "dataType": "uint"
+    },
+    {
+      "id": 2520,
+      "name": "TokensUsed",
+      "type": 2,
+      "dataType": "uint"
+    },
+    {
+      "id": 2521,
+      "name": "LlmCost",
+      "type": 6,
+      "dataType": "price_usd_cent"
+    },
+    {
+      "id": 2522,
+      "name": "HarnessEvent",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2523,
+      "name": "MotionHash",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2524,
+      "name": "ReplaySpeedTenths",
+      "type": 2,
+      "dataType": "uint"
+    },
+    {
+      "id": 2525,
+      "name": "MotionVerdict",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2526,
+      "name": "MaxTrackingTenths",
+      "type": 2,
+      "dataType": "uint"
+    },
+    {
+      "id": 2527,
+      "name": "MaxMotorTempC",
+      "type": 2,
+      "dataType": "uint"
+    },
+    {
+      "id": 2528,
+      "name": "BlockedReason",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2529,
+      "name": "RequestSource",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2530,
+      "name": "SpeedPolicy",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2531,
+      "name": "HistorySuccessPct",
+      "type": 2,
+      "dataType": "uint"
+    },
+    {
+      "id": 2532,
+      "name": "VerdictConfidencePct",
+      "type": 2,
+      "dataType": "uint"
+    },
+    {
+      "id": 2533,
+      "name": "HarnessRunId",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2534,
+      "name": "VideoSampleHash",
+      "type": 1,
+      "dataType": "string"
+    }
+  ]
+}

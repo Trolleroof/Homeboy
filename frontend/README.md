@@ -9,7 +9,7 @@ The Python interpreter defaults to `python3`. Point it at an environment with Le
 ## Teaching
 
 1. Plug in and power both arms. Align their poses and clear the follower's path.
-2. Click **Start teaching**. Homeboy starts the recorder if necessary, checks live joint readings and the wrist camera, aligns the follower to the leader over two seconds, and waits for recording to produce frames.
+2. If the arms are disengaged and their pose gap is too large for normal teleop engagement, clear the follower's path and use **Sync arms** in the left rail. After confirmation, Homeboy ramps the follower to the leader's current pose over two seconds and leaves teleop engaged. Otherwise click **Start teaching**; Homeboy checks live joint readings and camera frames, then waits for recording to produce frames.
 3. Move the leader through the task. Click **Stop teaching**, then save or discard. Stopping releases torque at the current pose; support the arm as needed. The recorder automatically saves pending takes after 120 seconds.
 4. Saving automatically indexes the recorded video. Describe what happened or appeared in the clip to retrieve it. Existing clips have an **Index video** button. If indexing fails, the recording remains saved and you can retry.
 
@@ -18,7 +18,7 @@ The emergency STOP cuts torque without commanding a return pose. After a stop, i
 ## Storage and search
 
 - Leader/follower serial ports: `bridge/config/arms.json`.
-- Camera mapping: `bridge/config/cameras.json`: wrist camera `0`, overhead camera `1`.
+- Camera mapping: `bridge/config/cameras.json`. The `wrist` stream is recorded into episodes; `overhead` is an additional live view that does not change the existing wrist-only episode schema. On this host, index 1 is the close gripper view and index 0 is the wide workspace view. Restart the bridge after changing the mapping.
 - Episodes, joint actions, and H.264 video: `~/.cache/huggingface/lerobot/homeboy/speedhacks-wrist-v1`.
 - Video vectors and optional display metadata: `datasets/homeboy_skills.sqlite3`.
 - Recorder log: `bridge/logs/recorder.log`.

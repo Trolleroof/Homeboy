@@ -75,12 +75,13 @@ class SkillMemory:
         with self.connect() as db:
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "skills" in tables and "video_embeddings" in tables:
-                for row in db.execute("SELECT s.*, v.embedding AS video_vector, v.model, v.revision FROM skills s LEFT JOIN video_embeddings v USING(repo_id,episode_index)"):
+                for row in db.execute("SELECT s.*, v.embedding AS video_vector, v.model, v.revision, v.sample_sha256 AS video_sha256 FROM skills s LEFT JOIN video_embeddings v USING(repo_id,episode_index)"):
                     skill = candidates.get(f'episode-{row["episode_index"]}')
                     if not skill or row["repo_id"] != "homeboy/speedhacks-wrist-v1":
                         continue
                     if row["video_vector"] and row["model"] == MODEL and row["revision"] == REVISION:
-                        matches.append({"skill_id": skill["id"], "score": cosine(query, json.loads(row["video_vector"])), "source": "demonstration_video"})
+                        matches.append({"skill_id": skill["id"], "score": cosine(query, json.loads(row["video_vector"])), "source": "demonstration_video",
+                                        "episode": row["episode_index"], "video_sha256": row["video_sha256"]})
             for row in db.execute("SELECT * FROM robot_experiences WHERE model=? AND revision=?", (MODEL, REVISION)):
                 skill = candidates.get(row["skill_id"])
                 if skill and skill["sha256"] == row["motion_sha256"] and json.loads(row["contract"]) == contract:
@@ -131,6 +132,29 @@ class SkillMemory:
                 evidence["id"], skill["id"], skill["sha256"], json.dumps(skill["contract"]), summary, result,
                 json.dumps(vector), MODEL, REVISION, json.dumps(evidence), time.time()))
         return {"run_id": evidence["id"], "result": result, "replay_reference": result == "success"}
+
+    def rank_videos(self, query, catalog):
+        """Rank approved skills by their indexed demonstration video for a free-form
+        question. Read-only lookups only: never use this to choose a motion."""
+        approved = {s["id"]: s for s in catalog if s["approved"]}
+        vector = embed(query)
+        ranked = []
+        with self.connect() as db:
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "video_embeddings" not in tables:
+                return []
+            for row in db.execute("SELECT episode_index, embedding, sample_sha256 FROM video_embeddings WHERE repo_id=? AND model=? AND revision=?",
+                                  ("willow/speedhacks-wrist-v1", MODEL, REVISION)):
+                skill = approved.get(f'episode-{row["episode_index"]}')
+                if skill:
+                    ranked.append({"skill_id": skill["id"], "score": cosine(vector, json.loads(row["embedding"])), "video_sha256": row["sample_sha256"]})
+        return sorted(ranked, key=lambda m: m["score"], reverse=True)
+
+    def run_ids(self, skill):
+        """Local evidence ids for this exact motion, to join Keewano runs back to full telemetry."""
+        with self.connect() as db:
+            return {r[0] for r in db.execute("SELECT run_id FROM robot_run_evidence WHERE skill_id=? AND motion_sha256=?",
+                                             (skill["id"], skill["sha256"]))}
 
     def read_run(self, run_id, skill):
         with self.connect() as db:
