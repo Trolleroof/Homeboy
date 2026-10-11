@@ -13,30 +13,30 @@ def outcomes(success, failure, **extra):
 class SpeedPolicyTests(unittest.TestCase):
     def test_no_history_uses_default(self):
         policy = speed_policy({})
-        self.assertEqual((policy["speed"], policy["policy"], policy["hold"]), (3.0, "no_history", False))
+        self.assertEqual((policy["speed"], policy["policy"], policy["hold"]), (18.0, "no_history", False))
 
     def test_proven_default_speed_is_kept(self):
-        policy = speed_policy({3.0: outcomes(9, 1)})
-        self.assertEqual((policy["speed"], policy["policy"]), (3.0, "default"))
+        policy = speed_policy({18.0: outcomes(9, 1)})
+        self.assertEqual((policy["speed"], policy["policy"]), (18.0, "default"))
 
     def test_failures_step_down_one_rung(self):
-        policy = speed_policy({3.0: outcomes(1, 4)})
-        self.assertEqual((policy["speed"], policy["policy"]), (2.0, "slowed_by_history"))
+        policy = speed_policy({18.0: outcomes(1, 4)})
+        self.assertEqual((policy["speed"], policy["policy"]), (6.0, "slowed_by_history"))
         self.assertIn("Faster speeds performed poorly", policy["reason"])
 
     def test_learns_to_settle_on_slower_proven_speed(self):
-        policy = speed_policy({3.0: outcomes(1, 4), 2.0: outcomes(2, 3), 1.5: outcomes(6, 0)})
-        self.assertEqual(policy["speed"], 1.5)
-
-    def test_too_few_runs_do_not_change_speed(self):
-        self.assertEqual(speed_policy({3.0: outcomes(0, 2)})["speed"], 3.0)
-
-    def test_near_tracking_limit_counts_as_bad(self):
-        policy = speed_policy({3.0: outcomes(5, 0, avg_max_tracking=7.1)})
+        policy = speed_policy({18.0: outcomes(1, 4), 6.0: outcomes(2, 3), 3.0: outcomes(2, 3), 2.0: outcomes(6, 0)})
         self.assertEqual(policy["speed"], 2.0)
 
+    def test_too_few_runs_do_not_change_speed(self):
+        self.assertEqual(speed_policy({18.0: outcomes(0, 2)})["speed"], 18.0)
+
+    def test_near_tracking_limit_counts_as_bad(self):
+        policy = speed_policy({18.0: outcomes(5, 0, avg_max_tracking=7.1)})
+        self.assertEqual(policy["speed"], 6.0)
+
     def test_uncertain_and_blocked_do_not_count(self):
-        policy = speed_policy({3.0: {"success": 0, "failure": 0, "uncertain": 9, "blocked": 9}})
+        policy = speed_policy({18.0: {"success": 0, "failure": 0, "uncertain": 9, "blocked": 9}})
         self.assertEqual(policy["policy"], "no_history")
 
     def test_all_speeds_bad_holds_skill(self):
@@ -53,7 +53,7 @@ class SpeedPolicyTests(unittest.TestCase):
         with patch.dict("os.environ", {"KEEWANO_PROJECT_ID": "p", "KEEWANO_EMAIL": "e", "KEEWANO_PAT": "t"}), \
                 patch.object(run_analytics, "_query", side_effect=OSError("down")):
             policy = run_analytics.recommend("episode-2", "abc")
-        self.assertEqual((policy["speed"], policy["policy"], policy["hold"]), (3.0, "keewano_unavailable", False))
+        self.assertEqual((policy["speed"], policy["policy"], policy["hold"]), (18.0, "keewano_unavailable", False))
 
     def test_query_rejects_unsafe_identifiers(self):
         with self.assertRaises(ValueError):

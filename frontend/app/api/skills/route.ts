@@ -126,10 +126,11 @@ export async function POST(request: Request) {
       if (!episode) return NextResponse.json({ error: "saved episode was not found" }, { status: 404 });
       const views = Object.entries(episode.videos).filter(([key]) => key.startsWith("observation.images."));
       if (!views.length) return NextResponse.json({ error: "episode has no recorded video" }, { status: 422 });
-      const indexed = [];
-      for (const [cameraKey, video] of views) {
-        const videoResult = await nativeEmbedding("video", { repo_id: row.repo_id, video_path: video.file, start: video.from, end: video.to, max_frames: 8 });
-        const caption = await nativeEmbedding("caption", { repo_id: row.repo_id, video_path: video.file, start: video.from, end: video.to, max_frames: 4 });
+      const results = await Promise.allSettled(views.map(async ([cameraKey, video]) => {
+        const [videoResult, caption] = await Promise.all([
+          nativeEmbedding("video", { repo_id: row.repo_id, video_path: video.file, start: video.from, end: video.to, max_frames: 8 }),
+          nativeEmbedding("caption", { repo_id: row.repo_id, video_path: video.file, start: video.from, end: video.to, max_frames: 4 }),
+        ]);
         if (!caption.caption?.trim()) throw new Error(`The local vision model returned an empty ${cameraKey} caption.`);
         db.prepare(`INSERT INTO camera_embeddings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(repo_id, episode_index, camera_key) DO UPDATE SET video_path=excluded.video_path,
@@ -141,7 +142,6 @@ export async function POST(request: Request) {
             JSON.stringify(videoResult.embedding), JSON.stringify(videoResult.frame_times), videoResult.sample_sha256!,
             caption.caption.trim(), JSON.stringify(caption.embedding), videoResult.model, videoResult.revision,
             caption.caption_model ?? "gemma3:4b", new Date().toISOString());
-        indexed.push({ camera: cameraKey, caption: caption.caption, frame_times: videoResult.frame_times });
         if (cameraKey === "observation.images.wrist") {
           db.prepare(`INSERT INTO video_embeddings VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(repo_id, episode_index) DO UPDATE SET embedding=excluded.embedding, model=excluded.model,
@@ -154,7 +154,13 @@ export async function POST(request: Request) {
             .run(row.repo_id, row.episode_index, caption.caption.trim(), JSON.stringify(caption.embedding), caption.model, caption.revision,
               caption.caption_model ?? "gemma3:4b", new Date().toISOString());
         }
-      }
+        return { camera: cameraKey, caption: caption.caption, frame_times: videoResult.frame_times };
+      }));
+      // Wait for every camera before closing the shared database, including on failure.
+      const indexed = results.map((result) => {
+        if (result.status === "rejected") throw result.reason;
+        return result.value;
+      });
       return NextResponse.json({ ok: true, model: VIDEO_MODEL, source: "multi_camera_video_pixels_plus_captions", cameras: indexed });
     } catch (error) { return NextResponse.json({ error: (error as Error).message }, { status: 503 }); }
     finally { db.close(); }

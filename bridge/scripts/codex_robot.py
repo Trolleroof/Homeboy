@@ -21,12 +21,23 @@ def tool(name, description, properties, required=None):
                             "additionalProperties": False}}
 
 
+def codex_binary():
+    # npm's CLI is the installation used with this protocol. A dashboard
+    # launched by npm can put an older Homebrew CLI first on PATH.
+    installed = Path.home() / ".npm-global/bin/codex"
+    if installed.is_file() and os.access(installed, os.X_OK):
+        return str(installed)
+    return shutil.which("codex")
+
+
 def available():
-    return bool(shutil.which("codex") or Path.home().joinpath(".npm-global/bin/codex").is_file())
+    return bool(codex_binary())
 
 
 def run_codex(prompt, tools, dispatch, cancel, event, timeout=120):
-    binary = shutil.which("codex") or str(Path.home()/".npm-global/bin/codex")
+    binary = codex_binary()
+    if not binary:
+        raise RuntimeError("Codex CLI is not installed")
     allowed = {t["name"] for t in tools}
     with tempfile.TemporaryDirectory(prefix="homeboy-codex-") as directory:
         home = Path(directory)

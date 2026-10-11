@@ -22,7 +22,8 @@ async function handle(request: Request, context: Context) {
     return NextResponse.json({ error: "Cross-origin robot commands are disabled" }, { status: 403 });
   }
   try {
-    if (post && armLease.held && (group === "recorder" || group === "harness" || (group === "daemon" && action === "start"))) return NextResponse.json({ error: "Finish or cancel calibration first." }, { status: 409 });
+    const stopping = (group === "recorder" && ["stop", "estop", "disengage"].includes(action)) || (group === "harness" && action === "stop");
+    if (post && armLease.held && !stopping && (group === "recorder" || group === "harness" || (group === "daemon" && action === "start"))) return NextResponse.json({ error: "Finish or cancel calibration first." }, { status: 409 });
     if (parts.length === 1 && group === "skills") return post ? skillsPOST(request) : skillsGET();
     if (parts.length === 1 && group === "video" && !post) return videoGET(request);
     if (parts.length !== 2) return NextResponse.json({ error: "Unknown bridge endpoint" }, { status: 404 });
@@ -64,12 +65,13 @@ async function handle(request: Request, context: Context) {
     }
     const response = await fetch(`${recorderURL}/${endpoint}`, { method: request.method,
       headers: { "Content-Type": "application/json" }, body,
-      cache: "no-store", signal: stream ? request.signal : AbortSignal.timeout(group === "recorder" && action === "sync" ? 120_000 : 15_000) });
+      cache: "no-store", signal: stream ? request.signal : AbortSignal.timeout(group === "recorder" && action === "sync" ? 120_000 : post ? 35_000 : 15_000) });
     return new Response(response.body, { status: response.status, headers: { "Content-Type": response.headers.get("content-type") ?? "application/json", "Cache-Control": "no-store" } });
   } catch (error) {
-    const offline = { ok: false, offline: true, error: (error as Error).message, message: "Recorder is offline. Start teaching to connect the arms.", ...status() };
     // A status poll answering "the recorder is down" is a successful check, not a server failure.
     const statusPoll = !post && action === "status" && (group === "recorder" || group === "harness");
-    return NextResponse.json(offline, { status: statusPoll ? 200 : 503 });
+    const failure = { ...status(), ok: false, ...(statusPoll ? { offline: true, message: "Recorder is offline. Start teaching to connect the arms." } : {}),
+      error: (error as Error).name === "TimeoutError" ? `Timed out waiting for ${group}/${action}. Check live status; STOP remains available.` : (error as Error).message };
+    return NextResponse.json(failure, { status: statusPoll ? 200 : 503 });
   }
 }

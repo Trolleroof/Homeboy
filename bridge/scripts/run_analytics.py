@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "keewano"))
 import keewano  # noqa: E402
 
 # Fastest first. Every rung is at or below the controller's own limit.
-SPEED_LADDER = tuple(s for s in (3.0, 2.0, 1.5, 1.0) if s <= MAX_SPEED)
+SPEED_LADDER = tuple(s for s in (18.0, 6.0, 3.0, 2.0, 1.5, 1.0) if s <= MAX_SPEED)
 MIN_RUNS = 3
 PROVEN_RATE = .8
 BAD_RATE = .6
@@ -196,7 +196,7 @@ def speed_policy(stats):
                 "reason": "No recorded outcomes for this motion yet; using the default speed."}
     for speed in SPEED_LADDER:
         row = summary[speed]
-        if row["status"] == "bad":
+        if row["status"] == "bad" or any(s < speed and v['status'] == 'bad' for s, v in summary.items()):
             continue
         policy = "default" if speed == SPEED_LADDER[0] else "slowed_by_history"
         reason = (f"{speed:g} units/s: {row['decided_runs']} decided runs, "

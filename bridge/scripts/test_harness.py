@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-from motion_program import JOINTS, MotionProgram
+from motion_program import JOINTS, MotionProgram, MAX_SPEED, MAX_COMMAND_STEP
 from record_server import Recorder, encode_jpeg
 import task_harness
 from task_harness import TaskHarness, outcome, task_contract
@@ -121,9 +121,30 @@ class HarnessTests(unittest.TestCase):
         skill = {"id": "episode-2", "episode": 2, "description": "Pick and place the orange block in the bin", "approved": True,
                  "frames": frames(), "duration": .3, "conversion": "none", "start_pose": pose(), "sha256": "test",
                  "contract": task_contract("Pick and place the orange block in the bin"),
+                 "demonstration_evidence": {"source": "fake_recorded_episode", "measured_samples": 2,
+                                            "samples": [{"measured": f["pose"], "recorded_action": f["pose"], "t": f["t"]} for f in frames()]},
                  "reference": base64.b64encode(self.recorder.fresh_jpeg("wrist")).decode()}
         (Path(self.tmp.name)/"skill-2.json").write_text(json.dumps(skill))
         self.harness.plan = {"id": "plan", "at": time.time(), "skill_id": "episode-2", "sha256": "test", "prompt": "Place the orange block in the bin"}
+
+    def test_saved_episode_keeps_plan_and_timestamped_evidence_without_nested_recall(self):
+        self.add_skill()
+        skill = self.harness.catalog()[0]
+        skill["demonstration_evidence"] = {"source": "test", "measured_samples": 0, "samples": []}
+        plan = {**self.harness.plan, "reason": "Reuse the demonstrated placement", "speed": 1.5,
+                "retrieval": {"episode": 2, "video_sha256": "video-2", "episode_summary": {"old": "context"}}}
+        self.harness.run = {"id": "episode-run", "skill_snapshot": skill, "execution_plan": plan,
+                            "result": "failure", "initial_state": {"positions": pose()}, "events": [],
+                            "telemetry_snapshots": [{"frame": "during.jpg", "at": 100, "state": {"positions": pose()}}]}
+        self.harness._save_run_evidence()
+        stored = json.loads((Path(self.tmp.name)/"episode-run-evidence.json").read_text())
+        self.assertEqual(stored["plan"]["reason"], plan["reason"])
+        self.assertEqual(stored["demonstration_video"]["video_sha256"], "video-2")
+        self.assertNotIn("retrieval", stored["plan"])
+        self.assertEqual(stored["snapshots"][0]["at"], 100)
+        previous = self.harness._example(skill, 0, "episode-run")["previous_run"]
+        self.assertEqual(previous["plan"], stored["plan"])
+        self.assertEqual(previous["demonstration_video"], stored["demonstration_video"])
 
     def wait_job(self):
         deadline = time.monotonic()+10
@@ -259,12 +280,12 @@ class HarnessTests(unittest.TestCase):
 
     def test_rate_limited_interpolation_and_completion(self):
         program = MotionProgram([{"t": 0, "pose": pose()}, {"t": .1, "pose": pose(10)}])
-        self.assertAlmostEqual(program.duration, 10/3)
+        self.assertAlmostEqual(program.duration, 10/MAX_SPEED)
         program.start(pose(), 0)
         measured = pose()
         for i in range(1, 110):
             target = program.tick(measured, i/30)
-            self.assertLessEqual(max(abs(target[k]-measured[k]) for k in JOINTS), 3/30+1e-9)
+            self.assertLessEqual(max(abs(target[k]-measured[k]) for k in JOINTS), MAX_SPEED/30+1e-9)
             measured = target
         self.assertTrue(program.complete)
 
@@ -273,13 +294,13 @@ class HarnessTests(unittest.TestCase):
         program.start(pose(4), 0)  # Initial pose offset must also move slowly.
         target = program.tick(pose(4), .1)
         self.assertLessEqual(max(abs(target[k]-pose(4)[k]) for k in JOINTS), .1+1e-9)
-        for speed in (10, 3.01, True, float("nan"), 0, -1):
+        for speed in (MAX_SPEED+1, MAX_SPEED+.01, True, float("nan"), 0, -1):
             with self.assertRaises(ValueError):
                 MotionProgram(frames(), speed=speed)
         program = MotionProgram([{"t": 0, "pose": pose()}, {"t": .1, "pose": pose(10)}])
         program.start(pose(), 0)
         target = program.tick(pose(), .4)  # Delayed ticks never create a large catch-up step.
-        self.assertLessEqual(max(abs(target[k]-pose()[k]) for k in JOINTS), .15+1e-9)
+        self.assertLessEqual(max(abs(target[k]-pose()[k]) for k in JOINTS), MAX_COMMAND_STEP+1e-9)
 
     def test_reject_invalid_programs(self):
         for value in (float("nan"), float("inf"), 101, -101, True):
@@ -299,6 +320,14 @@ class HarnessTests(unittest.TestCase):
         program.start(pose(), 0)
         with self.assertRaises(RuntimeError):
             program.tick(pose(), .51)
+
+    def test_evidence_indexing_preserves_terminal_failure(self):
+        self.harness.run = {'id': 'test-blocked', 'state': 'preparing_motion', 'events': [], 'result': None}
+        self.harness.event('blocked', error='Align follower to skill start pose')
+        self.harness.run['result'] = 'blocked'
+        self.harness.event('run_evidence_indexed', result='blocked')
+        self.assertEqual(self.harness.run['state'], 'blocked')
+        self.assertEqual(self.harness.run['events'][-1]['event'], 'run_evidence_indexed')
 
     def test_partial_read_never_refreshes_timestamp(self):
         self.recorder.robot.bus.partial = True
@@ -537,6 +566,81 @@ class HarnessTests(unittest.TestCase):
         start.assert_called_once()
         self.assertTrue(self.harness.catalog()[0]["approved"])
         self.assertEqual(self.harness.run["result"], "uncertain")  # verification is best-effort
+
+    def test_copied_plan_uses_measured_follower_not_leader_commands(self):
+        self.add_skill()
+        original = self.harness.catalog()[0]
+        original['demonstration_evidence']['samples'][0]['measured'] = pose(.5)
+        copied = task_harness.copy_measured_skill(original)
+        self.assertEqual(copied['frames'][0]['pose'], pose(.5))
+        self.assertEqual(original['frames'][0]['pose'], pose())
+        self.assertNotEqual(copied['sha256'], original['sha256'])
+        original['demonstration_evidence']['samples'][0]['measured'] = None
+        with self.assertRaisesRegex(ValueError, 'incomplete'):
+            task_harness.copy_measured_skill(original)
+
+    def test_degree_demo_values_are_copied_exactly(self):
+        self.add_skill()
+        original = self.harness.catalog()[0]
+        bounds = dict(task_harness.DEFAULT_BOUNDS, **{'shoulder_lift.pos': (-104.66, 104.66)})
+        for sample in original['demonstration_evidence']['samples']:
+            sample['measured']['shoulder_lift.pos'] = -103.956
+        copied = task_harness.copy_measured_skill(original, bounds)
+        self.assertEqual(copied['copy_audit']['bounded_values'], 0)
+        self.assertEqual(copied['frames'][0]['pose']['shoulder_lift.pos'], -103.956)
+        program = MotionProgram(copied['frames'], bounds=bounds)
+        program.start(copied['frames'][0]['pose'], 0)
+
+    def test_do_approaches_demo_start_without_manual_alignment_or_model(self):
+        self.add_skill()
+        self.recorder.robot.bus.positions = {k.removesuffix('.pos'): 8.0 for k in JOINTS}
+        self.recorder.step()
+        self.loop_start()
+        candidate = {'episode': 2, 'description': 'put the orange block in the bin', 'score': .8, 'video_sha256': None}
+        with patch.object(self.harness.memory, 'find_recordings', return_value=[candidate]), \
+                patch.object(task_harness, 'run_codex') as codex, \
+                patch.object(task_harness, 'local_model', side_effect=RuntimeError('vision offline')):
+            self.harness.command('do', {'prompt': 'put the orange block in the bin'})
+            self.wait_job()
+        codex.assert_not_called()
+        self.assertGreater(self.harness.run['execution_plan']['approach_seconds'], 0)
+        self.assertEqual(self.harness.run['result'], 'uncertain')
+        commands = [c for c in self.recorder.robot.bus.history if isinstance(c, dict)]
+        self.assertEqual(commands[0], pose(8))
+        for a, b in zip(commands, commands[1:]):
+            self.assertLessEqual(max(abs(a[k]-b[k]) for k in JOINTS), MAX_COMMAND_STEP+1e-9)
+
+    def test_do_copies_measured_telemetry_without_checkpoint_holds(self):
+        self.add_skill()
+        skill = self.harness.catalog()[0]
+        skill['frames'] = [{'t': 0, 'pose': pose()}, {'t': 4, 'pose': pose(6)}]
+        skill['demonstration_evidence']['samples'] = [
+            {'measured': f['pose'], 'recorded_action': f['pose'], 't': f['t']} for f in skill['frames']]
+        (Path(self.tmp.name)/'skill-2.json').write_text(json.dumps(skill))
+        self.loop_start()
+        candidate = {'episode': 2, 'description': skill['description'], 'score': .8, 'video_sha256': None}
+        send = self.recorder.robot.send_action
+        def with_observed_elbow_lag(target):
+            result = send(target)
+            if self.recorder.robot.bus.torque and target['elbow_flex.pos'] < 5.9:
+                self.recorder.robot.bus.positions['elbow_flex'] = max(0, target['elbow_flex.pos']-3.7)
+            return result
+        with patch.object(self.harness.memory, 'find_recordings', return_value=[candidate]), \
+                patch.object(self.recorder.robot, 'send_action', side_effect=with_observed_elbow_lag), \
+                patch.object(task_harness, 'local_model', side_effect=RuntimeError('vision offline')):
+            self.harness.command('do', {'prompt': 'put the orange block in the bin'})
+            self.wait_job()
+        self.assertFalse(any(e['event'] == 'historical_turn_completed' for e in self.harness.run['events']))
+        plan = self.harness.run['execution_plan']
+        self.assertEqual(plan['motion_source'], 'demonstration_measured_joints')
+        saved = json.loads((Path(self.tmp.name)/plan['motion_file']).read_text())
+        self.assertEqual(saved['frames'], skill['frames'])
+        self.assertNotEqual(plan['sha256'], plan['source_sha256'])
+        self.assertGreater(self.harness.run['max_tracking'], 2)
+        self.assertLess(self.harness.run['max_tracking'], 8)
+        self.assertEqual(self.harness.run['execution_plan']['demonstration_source'], 'fake_recorded_episode')
+        self.assertEqual(self.harness.run['result'], 'uncertain')
+        self.assertIsNone(self.recorder._autonomy)
 
     def test_do_refuses_unrelated_or_mismatched_requests_without_moving(self):
         self.add_skill()

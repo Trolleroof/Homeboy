@@ -6,10 +6,10 @@ import math
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 import threading
 import time
+from video_samples import sample_frames
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
@@ -90,25 +90,21 @@ def embed_video(body: VideoInput):
     # Sample only this episode's window, even when LeRobot concatenates clips.
     timestamps = [body.start + duration * i / body.max_frames for i in range(body.max_frames)]
     try:
-        with lock, tempfile.TemporaryDirectory(prefix="homeboy-native-video-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="homeboy-native-video-") as tmp:
             started = time.monotonic()
             frames = []
             digest = hashlib.sha256()
-            for index, timestamp in enumerate(timestamps):
-                filename = Path(tmp) / f"{index:02}.jpg"
-                subprocess.run([
-                    ffmpeg, "-v", "error", "-y", "-ss", str(timestamp), "-i", str(video),
-                    "-frames:v", "1", "-vf", "scale=480:-2", str(filename),
-                ], check=True, timeout=20, capture_output=True)
+            for filename in sample_frames(ffmpeg, video, body.start, body.end, body.max_frames, tmp):
                 digest.update(filename.read_bytes())
                 with Image.open(filename) as image:
                     frames.append(image.convert("RGB").copy())
             # Native video modality consumes pixels directly. No task label,
             # caption, filename, or episode title is passed to the model.
-            vector = load_model().encode(
-                {"video": frames}, prompt="", normalize_embeddings=True,
-                processing_kwargs={"video": {"max_frames": body.max_frames, "fps": None, "add_timestamps": False}},
-            )
+            with lock:
+                vector = load_model().encode(
+                    {"video": frames}, prompt="", normalize_embeddings=True,
+                    processing_kwargs={"video": {"max_frames": body.max_frames, "fps": None, "add_timestamps": False}},
+                )
             return {
                 "embedding": vector.tolist(), "model": MODEL_ID, "revision": REVISION,
                 "source": "video_pixels", "frame_times": timestamps,
@@ -136,15 +132,10 @@ def caption_video(body: CaptionInput):
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise HTTPException(503, "ffmpeg is required to decode recorded frames")
-    timestamps = [body.start + duration * i / body.max_frames for i in range(body.max_frames)]
     try:
-        with lock, tempfile.TemporaryDirectory(prefix="homeboy-caption-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="homeboy-caption-") as tmp:
             images = []
-            for index, timestamp in enumerate(timestamps):
-                filename = Path(tmp) / f"{index:02}.jpg"
-                subprocess.run([ffmpeg, "-v", "error", "-y", "-ss", str(timestamp), "-i", str(video),
-                                "-frames:v", "1", "-vf", "scale=480:-2", str(filename)],
-                               check=True, timeout=20, capture_output=True)
+            for filename in sample_frames(ffmpeg, video, body.start, body.end, body.max_frames, tmp):
                 images.append(base64.b64encode(filename.read_bytes()).decode())
             request = urllib.request.Request("http://127.0.0.1:11434/api/chat", data=json.dumps({
                 "model": os.environ.get("HOMEBOY_MODEL", "gemma3:4b"), "stream": False,
@@ -155,7 +146,8 @@ def caption_video(body: CaptionInput):
                 generated = json.load(response)["message"]["content"].strip()
             if not generated:
                 raise ValueError("Vision model returned an empty caption")
-            vector = load_model().encode_query(generated, normalize_embeddings=True)
+            with lock:
+                vector = load_model().encode_query(generated, normalize_embeddings=True)
             return {"caption": generated[:800], "embedding": vector.tolist(), "model": MODEL_ID,
                     "revision": REVISION, "caption_model": os.environ.get("HOMEBOY_MODEL", "gemma3:4b")}
     except Exception as error:

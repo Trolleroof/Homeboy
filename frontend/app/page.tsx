@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import HarnessPanel from "./harness-panel";
 import CalibrationDialog from "./calibration-dialog";
 import FollowerView from "./follower-view";
+import { recorderWaitError, teleopReady } from "@/lib/recorder-feedback";
 
 type RecorderStatus = {
   state: string;
@@ -22,6 +23,7 @@ type RecorderStatus = {
   data_quality?: { ready?: boolean; issues?: string[]; camera_streaming?: Record<string, boolean> };
   estop?: { engaged?: boolean; reason?: string };
   calibration?: Record<string, unknown> | null;
+  autonomy?: { active?: boolean };
   delta?: {
     joints?: Record<string, { follower: number; leader: number; delta: number }>;
     max?: number;
@@ -83,6 +85,8 @@ export default function Home() {
   const [deleting, setDeleting] = useState("");
   const [library, setLibrary] = useState<SavedSkill[]>([]);
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const teachingAbort = useRef<AbortController | null>(null);
   const [calibrationOpen, setCalibrationOpen] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -106,7 +110,7 @@ export default function Home() {
 
   const indexVideo = useCallback(async (repoId: string, episodeIndex: number) => {
     setIndexing(`${repoId}:${episodeIndex}`); setError("");
-        setNotice("Reading the video…");
+    setNotice("Indexing in the background. You can record another take.");
     try {
       const response = await fetch("/api/skills", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -153,8 +157,18 @@ export default function Home() {
         return false;
       }
       setStatus(next);
+      if (next.message?.startsWith("save failed:") || next.message?.startsWith("nothing to save")) {
+        setNotice("");
+        setError(next.message);
+      }
       if (savedCount.current === null) savedCount.current = next.saved_episodes;
-      else if (next.saved_episodes > savedCount.current) {
+      else if (next.saved_episodes < savedCount.current) {
+        // A restarted writer or library deletion can reduce the saved count.
+        // Reset the baseline so the very next take is still registered.
+        savedCount.current = next.saved_episodes;
+        skillToIndex.current = null;
+      }
+      else if (next.state === "idle" && next.saved_at && next.saved_episodes > savedCount.current) {
         savedCount.current = next.saved_episodes;
         const skill = skillToIndex.current;
         skillToIndex.current = null;
@@ -166,7 +180,7 @@ export default function Home() {
           }).then(async (res) => {
             const body = await res.json();
             if (!res.ok) throw new Error(body.error ?? "Saved, but search indexing failed.");
-            setNotice("Saved. Reading the video…");
+            setNotice("Saved. Making it searchable in the background…");
             void refreshLibrary();
             await indexVideo(next.repo_id, next.saved_episodes - 1);
           }).catch((reason: unknown) => setError((reason as Error).message));
@@ -202,27 +216,32 @@ export default function Home() {
     return () => { cancelled = true; };
   }, []);
 
-  const call = useCallback(async (endpoint: string, body?: Record<string, unknown>) => {
+  const call = useCallback(async (endpoint: string, body?: Record<string, unknown>, signal?: AbortSignal) => {
     const response = await fetch(`/api/bridge/${endpoint}`, {
       method: body ? "POST" : "GET",
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
       cache: "no-store",
+      signal,
     });
     const result = await response.json();
     if (!response.ok || result.ok === false) throw new Error(result.error ?? `Request failed: ${endpoint}`);
     return result;
   }, []);
 
-  async function waitFor(test: (next: RecorderStatus) => boolean, timeoutMs = 90_000) {
+  async function waitFor(test: (next: RecorderStatus) => boolean, timeoutMs = 90_000, action = "waiting for the recorder", signal?: AbortSignal) {
     const deadline = Date.now() + timeoutMs;
+    let last: RecorderStatus | undefined;
     while (Date.now() < deadline) {
-      const response = await fetch("/api/bridge/recorder/status", { cache: "no-store" });
+      signal?.throwIfAborted();
+      const response = await fetch("/api/bridge/recorder/status", { cache: "no-store", signal });
       const next = await response.json() as RecorderStatus;
+      last = next;
       if (response.ok && !next.offline) {
         setStatus(next);
         if (test(next)) return next;
         if (next.state === "estopped") throw new Error("Stopped. Look at the arm, then hit Reset.");
+        if (next.state === "recording" && next.message?.startsWith("frame error:")) throw new Error(recorderWaitError(next, action));
       }
       if (next.offline) {
         const daemon = await call("daemon/status") as { running: boolean; log: string[] };
@@ -230,7 +249,8 @@ export default function Home() {
       }
       await new Promise((resolve) => window.setTimeout(resolve, 700));
     }
-    throw new Error("Robot didn't connect. Check the cables.");
+    signal?.throwIfAborted();
+    throw new Error(recorderWaitError(last, action));
   }
 
   async function startBridge(task: string) {
@@ -252,6 +272,62 @@ export default function Home() {
     if (result.ok === false && !String(result.error ?? "").includes("already")) throw new Error(result.error ?? "Couldn't start.");
   }
 
+  async function restartBridge() {
+    if (recording || pending || status.state === "saving") {
+      setError("Stop and save or discard the current take before restarting the bridge.");
+      return;
+    }
+    if (calibrationOpen || status.calibration) {
+      setError("Finish or cancel calibration before restarting the bridge.");
+      return;
+    }
+    if (status.estop?.engaged) {
+      setError("The emergency stop is active. Inspect the arm and use Reset before restarting the bridge.");
+      return;
+    }
+    if (status.autonomy?.active) {
+      setError("Wait for the robot motion to stop before restarting the bridge.");
+      return;
+    }
+    setBusy(true); setError(""); setNotice("Checking the bridge…");
+    try {
+      const task = status.task || description.trim() || "Camera preview";
+      const initialDaemon = await call("daemon/status") as { running?: boolean };
+      const wasRunning = !!initialDaemon.running;
+      if (wasRunning) {
+        const harness = await call("harness/status") as { active?: boolean };
+        if (harness.active) throw new Error("Wait for the current harness planning or robot run to finish before restarting the bridge.");
+      }
+      if (wasRunning && !window.confirm("The arm may jump when it reconnects. Clear the path and keep a hand on STOP before restarting the bridge. Continue?")) {
+        setNotice("");
+        return;
+      }
+      if (wasRunning) {
+        setNotice("Stopping the bridge…");
+        await call("daemon/stop", {});
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const daemon = await call("daemon/status") as { running?: boolean };
+          if (!daemon.running) break;
+          await new Promise((resolve) => window.setTimeout(resolve, 150));
+        }
+        const daemon = await call("daemon/status") as { running?: boolean };
+        if (daemon.running) throw new Error("The bridge is still shutting down. Check status, then try again.");
+      }
+      setNotice("Connecting the bridge…");
+      await startBridge(task);
+      const current = await waitFor((next) => next.state === "idle" && next.data_quality?.ready === true, 30_000);
+      setForcedCameras({});
+      setNotice(current.teleop?.ready
+        ? "Bridge restarted. Check the live joint positions before moving."
+        : "Bridge restarted. Check arm alignment and live joint positions before moving.");
+    } catch (reason) {
+      setError((reason as Error).message);
+      setNotice("");
+      await refreshStatus();
+    } finally { setBusy(false); }
+  }
+
   async function connectCameras() {
     setBusy(true); setError(""); setNotice("Connecting cameras…");
     try {
@@ -263,7 +339,6 @@ export default function Home() {
       setNotice("");
     } catch (reason) { setNotice(""); setError((reason as Error).message); }
     finally { setBusy(false); }
-    throw new Error("The robot bridge did not become ready. Check the local Homeboy bridge and device connections.");
   }
 
   async function syncArms() {
@@ -271,9 +346,8 @@ export default function Home() {
     setBusy(true); setError(""); setNotice("Syncing the follower slowly; large gaps can take several seconds…");
     try {
       await call("recorder/sync", { confirmed: true });
-      const current = await waitFor((next) => next.teleop?.engaged === true && next.teleop?.ready === true, 10_000);
-      if (!current.teleop?.ready) throw new Error("Sync completed, but measured joint gaps are still above the 25-unit limit. Check follower motion and alignment.");
-      setNotice("Arms synced. Teleop is engaged and within the tracking limit.");
+      await waitFor((next) => next.teleop?.engaged === true && teleopReady(next), 10_000, "finishing arm sync");
+      setNotice("Arms synced. Teleop is tracking and ready to record.");
     } catch (reason) {
       setError((reason as Error).message);
       setNotice("");
@@ -283,14 +357,19 @@ export default function Home() {
 
   async function startTeaching() {
     if (!description.trim()) return;
+    const controller = new AbortController();
+    teachingAbort.current?.abort();
+    teachingAbort.current = controller;
+    const { signal } = controller;
     setBusy(true); setError(""); setNotice("");
     try {
       let current = status;
       if (current.offline) {
         setNotice("Connecting…");
         await startBridge(description.trim());
-        current = await waitFor((next) => next.state === "idle" && next.data_quality?.ready === true);
+        current = await waitFor((next) => next.state === "idle" && next.data_quality?.ready === true, 90_000, "connecting the bridge", signal);
       }
+      current = await call("recorder/status", undefined, signal) as RecorderStatus;
       if (current.state === "estopped") throw new Error("Stopped. Look at the arm, then hit Reset.");
       if (current.state === "recording" || current.state === "saving") throw new Error("Already recording.");
       if (current.state === "pending") throw new Error("Save or toss this one first.");
@@ -298,44 +377,56 @@ export default function Home() {
         const issues = current.data_quality?.issues?.join(" · ");
         throw new Error(issues || "Not ready. Check the camera.");
       }
-      if (!current.teleop?.ready) {
+      if (!teleopReady(current)) {
         setNotice("Checking the arms…");
-        current = await waitFor((next) => next.teleop?.ready === true && next.data_quality?.ready === true, 8_000);
+        current = await waitFor((next) => teleopReady(next) && next.data_quality?.ready === true, 8_000, "checking teleop", signal);
       }
       if (!current.teleop?.engaged) {
         setNotice("Linking the arms…");
-        await call("recorder/engage", {});
-        current = await waitFor((next) => next.teleop?.record_ready === true, 8_000);
+        await call("recorder/engage", {}, signal);
+        current = await waitFor((next) => next.teleop?.record_ready === true, 8_000, "engaging teleop", signal);
       }
-      current = await waitFor((next) => next.teleop?.record_ready === true && next.data_quality?.ready === true, 8_000);
-      await call("recorder/task", { task: description.trim() });
+      current = await waitFor((next) => next.teleop?.record_ready === true && next.data_quality?.ready === true, 8_000, "checking recording readiness", signal);
+      await call("recorder/task", { task: description.trim() }, signal);
       skillToIndex.current = description.trim();
-      await call("recorder/record", {});
-      await waitFor((next) => next.state === "recording" && next.frames > 0, 8_000);
+      await call("recorder/record", {}, signal);
+      await waitFor((next) => next.state === "recording" && next.frames > 0, 8_000, "starting the recording", signal);
       setNotice("Go. Hit stop when you're done.");
       await refreshStatus();
     } catch (reason) {
+      if (signal.aborted) return;
       setError((reason as Error).message);
       setNotice("");
     } finally {
-      setBusy(false);
+      if (teachingAbort.current === controller) {
+        teachingAbort.current = null;
+        setBusy(false);
+      }
     }
   }
 
   async function stopTeaching() {
+    teachingAbort.current?.abort();
+    teachingAbort.current = null;
+    setStopping(true);
     setBusy(true); setError("");
     try {
       await call("recorder/stop", {});
       setNotice("Stopped. Save it or toss it.");
       await refreshStatus();
     } catch (reason) { setError((reason as Error).message); }
-    finally { setBusy(false); }
+    finally { setStopping(false); setBusy(false); }
   }
 
   async function saveTake() {
     setBusy(true); setError("");
-    try { await call("recorder/save", {}); setNotice("Saving…"); await refreshStatus(); }
-    catch (reason) { setError((reason as Error).message); }
+    setNotice("Saving…");
+    try {
+      const result = await call("recorder/save", {}) as { saved?: boolean; episode?: number };
+      if (result.saved) setNotice(`Saved take ${(result.episode ?? 0) + 1}.`);
+      await refreshStatus();
+    }
+    catch (reason) { setNotice(""); setError((reason as Error).message); await refreshStatus(); }
     finally { setBusy(false); }
   }
 
@@ -347,6 +438,9 @@ export default function Home() {
   }
 
   async function emergencyStop() {
+    teachingAbort.current?.abort();
+    teachingAbort.current = null;
+    setBusy(false);
     setError("");
     try {
       await call("recorder/estop", { reason: "operator stop from Homeboy skillbook" });
@@ -376,9 +470,10 @@ export default function Home() {
   }
 
   const recording = status.state === "recording";
+  const saving = status.state === "saving";
   const pending = status.state === "pending";
   const bridgeOnline = !status.offline;
-  const preflightReady = bridgeOnline && status.teleop?.ready === true && status.data_quality?.ready === true;
+  const preflightReady = teleopReady(status) && status.data_quality?.ready === true;
   const linked = preflightReady && status.teleop?.engaged === true;
   const syncHint = status.estop?.engaged
     ? "Emergency stop is active. Inspect the arm fault before resetting it."
@@ -394,7 +489,7 @@ export default function Home() {
   const wristStreaming = bridgeOnline && (status.data_quality?.camera_streaming?.wrist === true || forcedCameras.wrist === true);
   const overheadStreaming = bridgeOnline && (status.data_quality?.camera_streaming?.overhead === true || forcedCameras.overhead === true);
   const teachStage = recording ? "recording" : pending ? "save" : linked ? "ready" : bridgeOnline ? "syncing" : "offline";
-  const connectionText = !bridgeOnline ? "Offline" : !status.teleop?.ready ? "Checking arms" : !status.data_quality?.ready ? "Checking camera" : linked ? "Ready" : "Arms on";
+  const connectionText = !bridgeOnline ? "Offline" : !teleopReady(status) ? "Checking arms" : !status.data_quality?.ready ? "Checking camera" : linked ? "Ready" : "Arms on";
 
   return (
     <main className="app-shell">
@@ -416,7 +511,7 @@ export default function Home() {
       <section className="main-column" id="top">
         <header className="topbar">
           <div className="crumb"><strong>SKILLBOOK</strong></div>
-          <div className="topbar-actions">{bridgeOnline && status.state === "estopped" && <button className="quiet-button" onClick={() => { void call("recorder/rearm", {}).then(() => refreshStatus()).catch((reason: Error) => setError(reason.message)); }}>Reset</button>}{bridgeOnline && <button className="estop-button" onClick={() => void emergencyStop()} aria-label="Emergency stop robot">STOP</button>}<div className={`connection-pill ${linked ? "connected" : ""}`}><span className="pulse" />{connectionText}</div></div>
+          <div className="topbar-actions"><button type="button" className="quiet-button bridge-restart-button" disabled={busy || recording || pending || !!status.calibration} onClick={() => void restartBridge()} title="Restart the local robot bridge; the arm may jump as it reconnects"><span className="restart-full">Restart bridge</span><span className="restart-short">Restart</span></button>{bridgeOnline && status.state === "estopped" && <button className="quiet-button" onClick={() => { void call("recorder/rearm", {}).then(() => refreshStatus()).catch((reason: Error) => setError(reason.message)); }}>Reset</button>}{bridgeOnline && <button className="estop-button" onClick={() => void emergencyStop()} aria-label="Emergency stop robot">STOP</button>}<div className={`connection-pill ${linked ? "connected" : ""}`}><span className="pulse" />{connectionText}</div></div>
         </header>
 
         <div className="content">
@@ -445,10 +540,10 @@ export default function Home() {
               <div className="card-topline"><span className="step-tag">TEACH</span><span className="tiny-live"><i className={recording ? "active" : ""} />{recording ? "REC" : "READY"}</span></div>
               {bridgeOnline && <div className={`sync-check ${status.teleop?.ready ? "sync-check-ready" : ""}`}><span className="sync-check-led" /><div><strong>{status.teleop?.ready ? "Leader and follower aligned" : status.teleop?.worst_joint ? `${status.teleop.worst_joint.replaceAll("_", " ")} is apart` : "Waiting for fresh arm readings"}</strong><small>{status.teleop?.ready && !status.estop?.engaged && (status.hardware?.teleop?.motors_ok ?? 0) === 6 && (status.hardware?.follower?.motors_ok ?? 0) === 6 ? "Within the 25-unit tracking limit" : syncHint}</small></div><span className="sync-motor-count">L {status.hardware?.teleop?.motors_ok ?? 0}/{status.hardware?.teleop?.motors_total ?? 6} · F {status.hardware?.follower?.motors_ok ?? 0}/{status.hardware?.follower?.motors_total ?? 6}</span></div>}
               <label className="field-label" htmlFor="skill-description">Name it</label>
-              <textarea id="skill-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Block into the bin" rows={2} disabled={recording || pending} />
+              <textarea id="skill-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Block into the bin" rows={2} disabled={recording || pending || saving} />
               <div className="teach-bottom">
                 <div className="camera-pips"><span className="camera-icon">◉</span><span>Both cameras</span></div>
-                {recording ? <button className="primary-button stop-button" onClick={() => void stopTeaching()} disabled={busy}><span className="stop-square" />{busy ? "Stopping…" : "Stop"}</button> : pending ? <div className="take-actions"><button className="quiet-button" onClick={() => void discardTake()} disabled={busy}>Toss</button><button className="primary-button" onClick={() => void saveTake()} disabled={busy}>Save <span>→</span></button></div> : <button className="primary-button" onClick={() => void startTeaching()} disabled={busy || !description.trim()}><span className="button-dot" />{busy ? "Wait…" : "Start"}<span>→</span></button>}
+                {recording ? <button className="primary-button stop-button" onClick={() => void stopTeaching()} disabled={stopping}><span className="stop-square" />{stopping ? "Stopping…" : "Stop"}</button> : pending ? <div className="take-actions"><button className="quiet-button" onClick={() => void discardTake()} disabled={busy}>Toss</button><button className="primary-button" onClick={() => void saveTake()} disabled={busy}>Save <span>→</span></button></div> : <button className="primary-button" onClick={() => void startTeaching()} disabled={busy || saving || !description.trim()}><span className="button-dot" />{saving ? "Saving…" : busy ? "Wait…" : "Start"}<span>→</span></button>}
               </div>
               {(notice || error) && <div className={`feedback ${error ? "error" : ""}`} role="status" aria-live="polite">{error || notice}</div>}
               {(status.started_at || status.stopped_at || status.saved_at) && <div className="recording-timestamps" aria-label="Take timestamps">{status.started_at && <span>Started {new Date(status.started_at).toLocaleString()}</span>}{status.stopped_at && <span>Stopped {new Date(status.stopped_at).toLocaleString()}</span>}{status.saved_at && <span>Saved {new Date(status.saved_at).toLocaleString()}</span>}</div>}
@@ -508,13 +603,21 @@ function MjpegStream({ src, alt }: { src: string; alt: string }) {
   const [attempt, setAttempt] = useState(0);
   const timer = useRef<number | null>(null);
   useEffect(() => {
-    timer.current = window.setTimeout(() => setFailed(true), 8_000);
+    timer.current = window.setTimeout(() => {
+      void fetch(`${src}?mode=snapshot`, { cache: "no-store", signal: AbortSignal.timeout(3000) })
+        .then(response => setFailed(!response.ok)).catch(() => setFailed(true));
+    }, 8_000);
     return () => { if (timer.current !== null) window.clearTimeout(timer.current); };
-  }, [attempt]);
+  }, [attempt, src]);
+  useEffect(() => {
+    if (!failed) return;
+    const retry = window.setTimeout(() => { setFailed(false); setAttempt(value => value + 1); }, 3000);
+    return () => window.clearTimeout(retry);
+  }, [failed]);
   return <div className="stream-wrap">
     {/* Next Image optimization cannot process the recorder's multipart MJPEG stream. */}
     {/* eslint-disable-next-line @next/next/no-img-element */}
     <img src={`${src}?retry=${attempt}`} alt={alt} onLoad={() => { if (timer.current !== null) window.clearTimeout(timer.current); setFailed(false); }} onError={() => setFailed(true)} />
-    {failed && <div className="stream-error"><span>Camera died.</span><button type="button" onClick={() => { setFailed(false); setAttempt((value) => value + 1); }}>Try again</button></div>}
+    {failed && <div className="stream-error"><span>Camera feed interrupted. Reconnecting…</span><button type="button" onClick={() => { setFailed(false); setAttempt((value) => value + 1); }}>Try again</button></div>}
   </div>;
 }
