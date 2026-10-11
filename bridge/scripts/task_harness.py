@@ -18,6 +18,7 @@ import uuid
 
 from motion_program import JOINTS, MotionProgram, MAX_SPEED, MAX_COMMAND_STEP
 from codex_robot import available, run_codex, tool
+from keewano_sink import KeewanoSink
 from skill_memory import SkillMemory
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -112,7 +113,7 @@ def outcome(result):
 
 
 class TaskHarness:
-    def __init__(self, recorder):
+    def __init__(self, recorder, keewano=None):
         self.recorder = recorder
         self.lock = threading.RLock()
         self.run = None
@@ -120,6 +121,8 @@ class TaskHarness:
         self.active = False
         self.cancel = threading.Event()
         self.memory = SkillMemory()
+        # Tests and hardware-free uses get a disabled sink; record_server passes a live one.
+        self.keewano = keewano or KeewanoSink(api_key="", load_env=False)
         STORE.mkdir(parents=True, exist_ok=True)
 
     def catalog(self):
@@ -162,6 +165,7 @@ class TaskHarness:
             self.run["state"] = name
             with (STORE / "runs.jsonl").open("a") as stream:
                 stream.write(json.dumps({"run_id": self.run["id"], **event}) + "\n")
+            self.keewano.emit(self.run["id"], event)
 
     def import_episode(self, payload):
         # Fixed project dataset; client cannot choose a filesystem path.

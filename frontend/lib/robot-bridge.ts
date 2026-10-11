@@ -1,6 +1,7 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { armLease } from "./arm-lease";
 
 export const root = path.resolve(process.cwd(), "..", "bridge");
 export const recorderURL = "http://127.0.0.1:8621";
@@ -21,23 +22,55 @@ function ownedPid(): number | null {
     return command.includes(path.join(root, "scripts/record_server.py")) && command.includes("--port 8621") ? pid : null;
   } catch { return null; }
 }
+function startupFailure(log: string[]): string {
+  const text = log.join("\n");
+  const missing = /Missing motor IDs:\s*((?:\s*- \d+[^\n]*\n?)+)/.exec(text);
+  if (missing) {
+    const ids = [...missing[1].matchAll(/- (\d+)/g)].map(match => Number(match[1]));
+    const names: Record<number, string> = { 1: "shoulder pan", 2: "shoulder lift", 3: "elbow flex", 4: "wrist flex", 5: "wrist roll", 6: "gripper" };
+    const port = /motor check failed on port '([^']+)'/.exec(text)?.[1];
+    const role = port === config().robotPort ? "Follower" : port === config().teleopPort ? "Leader" : "Arm";
+    return `${role} motor check failed: ${ids.map(id => `${names[id] ?? "motor"} (ID ${id})`).join(", ")} did not respond. Check arm power and the daisy-chain connections, then reconnect.`;
+  }
+  const exception = log.filter(line => /^(?:\w*Error|\w*Exception):/.test(line)).at(-1);
+  return exception ?? log.at(-1) ?? "Bridge exited before its controller was ready.";
+}
 export function status() {
   const pid = ownedPid();
-  return { running: pid !== null, starting: state.starting, pid, log: state.log.slice(-30) };
+  const log = state.log.slice(-60);
+  const exit = log.filter(line => line.startsWith("Recorder exited:")).at(-1);
+  const startup_error = !armLease.held && pid === null && exit && !/^Recorder exited: (0|SIGINT)$/.test(exit) ? startupFailure(log) : null;
+  return { running: pid !== null, starting: state.starting, pid, log, startup_error, calibrating: armLease.held };
+}
+async function waitUntilReady(child: ChildProcess) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error(startupFailure(state.log));
+    try {
+      const response = await fetch(`${recorderURL}/status`, { cache: "no-store", signal: AbortSignal.timeout(1000) });
+      if (response.ok) {
+        const body = await response.json();
+        if (typeof body.state === "string" && !body.offline) return;
+      }
+    } catch { /* imports, camera startup and bus handshake may still be in progress */ }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  throw new Error("Bridge is still starting after 30 seconds. Check its status before reconnecting.");
 }
 export async function start(task: string) {
-  if (state.starting) return { ok: true, ...status() };
-  if (status().running) {
-    const current = await fetch(`${recorderURL}/status`, { signal: AbortSignal.timeout(2000) }).then(r => r.json());
-    const settings = config();
-    if (!current.offline_bridge || ![settings.robotPort, settings.teleopPort].every(p => fs.existsSync(p))) return { ok: true, ...status() };
-    await stop();
-    const deadline = Date.now() + 8000;
-    while (status().running && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
-    if (status().running) throw new Error("Offline bridge is still shutting down; retry connection shortly.");
-  }
+  if (armLease.held) throw new Error("Finish or cancel calibration before connecting the bridge.");
+  if (state.starting) throw new Error("Bridge is still connecting. Wait for its startup check to finish.");
   state.starting = true;
   try {
+    if (status().running) {
+      const current = await fetch(`${recorderURL}/status`, { signal: AbortSignal.timeout(2000) }).then(r => r.json());
+      const settings = config();
+      if (!current.offline_bridge || ![settings.robotPort, settings.teleopPort].every(p => fs.existsSync(p))) return { ok: true, ...status(), starting: false, ready: true };
+      await stop();
+      const deadline = Date.now() + 8000;
+      while (status().running && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      if (status().running) throw new Error("Offline bridge is still shutting down; retry connection shortly.");
+    }
     const settings = config();
     const offline = ![settings.robotPort, settings.teleopPort].every(p => fs.existsSync(p));
     const processes = execFileSync("/bin/ps", ["-Ao", "pid=,command="], { encoding: "utf8" });
@@ -76,7 +109,8 @@ export async function start(task: string) {
     child.on("error", error => append(error.message));
     child.on("exit", (code, signal) => append(`Recorder exited: ${code ?? signal}\n`));
     child.stdin?.end("\n");
-    return { ok: true, ...status() };
+    await waitUntilReady(child);
+    return { ok: true, ...status(), starting: false, ready: true };
   } finally { state.starting = false; }
 }
 export async function stop() {

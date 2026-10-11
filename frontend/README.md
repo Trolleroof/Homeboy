@@ -18,7 +18,7 @@ The emergency STOP cuts torque without commanding a return pose. After a stop, i
 ## Storage and search
 
 - Leader/follower serial ports: `bridge/config/arms.json`.
-- Camera mapping: `bridge/config/cameras.json`. This project currently records only `wrist=0`.
+- Camera mapping: `bridge/config/cameras.json`: wrist camera `0`, overhead camera `1`.
 - Episodes, joint actions, and H.264 video: `~/.cache/huggingface/lerobot/homeboy/speedhacks-wrist-v1`.
 - Video vectors and optional display metadata: `datasets/homeboy_skills.sqlite3`.
 - Recorder log: `bridge/logs/recorder.log`.

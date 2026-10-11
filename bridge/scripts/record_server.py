@@ -217,11 +217,11 @@ def recorder_data_issues(
     if camera_meta != TRAINING_CAMERAS:
         expected = " and ".join(f"{name}={index}" for name, index in sorted(TRAINING_CAMERAS.items()))
         issues.append(f"camera labels must be {expected} (from {CAMERAS_CONFIG_PATH.name})")
-    if set(camera_meta) != dataset_cameras:
-        issues.append("recorder camera names do not match the dataset")
+    if not dataset_cameras.issubset(camera_meta):
+        issues.append("a recorded camera is missing from the live configuration")
     if fps != dataset_fps:
         issues.append(f"recorder is {fps} fps but dataset is {dataset_fps} fps")
-    missing = [name for name, streaming in camera_streaming.items() if not streaming]
+    missing = [name for name in dataset_cameras if not camera_streaming.get(name, False)]
     if missing:
         issues.append(f"no fresh frames from {', '.join(sorted(missing))}")
     return issues
@@ -454,8 +454,9 @@ class Recorder:
         self._autonomy_error = ""
         self._autonomy_trace = deque(maxlen=10000)
         self.offline = False
+        from keewano_sink import KeewanoSink
         from task_harness import TaskHarness
-        self.harness = TaskHarness(self)
+        self.harness = TaskHarness(self, KeewanoSink())
 
     # -- called from the HTTP thread ------------------------------------
 
@@ -473,8 +474,19 @@ class Recorder:
             now = time.time()
             positions = dict(self._last_robot_pos)
             age = now-self._last_robot_pos_at if self._last_robot_pos_at else None
+            radians = {}
+            calibration = getattr(getattr(self.robot, "bus", None), "calibration", {}) or {}
+            for name in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"):
+                motor = calibration.get(name)
+                value = positions.get(f"{name}.pos")
+                if motor is not None and isinstance(value, (float, int)) and np.isfinite(value):
+                    # Inverse LeRobot RANGE_M100_100 about the calibrated midpoint;
+                    # STS3215 degrees normalization uses 4095 encoder intervals.
+                    span = motor.range_max - motor.range_min
+                    if span > 0:
+                        radians[name] = float(value) / 100 * span * np.pi / 4095
             return {"source": "recorder_cache", "units": "LeRobot normalized joint units",
-                    "positions": positions, "age_s": age,
+                    "positions": positions, "age_s": age, "radians": radians, "gripper": positions.get("gripper.pos"),
                     "hardware_available": not self.offline and age is not None and 0 <= age < .5 and len(positions) == 6,
                     "temperatures": dict(self._follower_temps),
                     "temperature_age_s": now-self._motors_probed_at if self._motors_probed_at else None,
@@ -993,30 +1005,26 @@ class Recorder:
         return obs_dict
 
     def _read_teleop_action(self) -> dict[str, Any]:
-        action_dict: dict[str, Any] = {}
-        now = time.time()
+        # Never substitute cached/default angles for a missing leader joint:
+        # those values would become real follower commands and training labels.
         try:
             bus = getattr(self.teleop, "bus", None)
-            if bus is not None:
-                raw_pos = bus.sync_read("Present_Position", num_retry=3)
-                if raw_pos and isinstance(raw_pos, dict):
-                    for motor, val in raw_pos.items():
-                        if isinstance(val, (int, float, np.number)):
-                            action_dict[f"{motor}.pos"] = float(val)
-                    self._last_teleop_action = dict(action_dict)
-                    self._last_teleop_action_at = now
+            if bus is None:
+                raise RuntimeError("Leader bus is unavailable")
+            raw_pos = bus.sync_read("Present_Position", num_retry=3)
+            expected = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"}
+            if not isinstance(raw_pos, dict) or set(raw_pos) != expected or not all(
+                isinstance(v, (int, float, np.number)) and np.isfinite(v) for v in raw_pos.values()
+            ):
+                raise RuntimeError("Require fresh readings from all six leader motors")
+            action = {f"{motor}.pos": float(value) for motor, value in raw_pos.items()}
+            self._last_teleop_action = dict(action)
+            self._last_teleop_action_at = time.time()
+            return action
         except Exception as err:
-            log.debug("read teleop action exception: %s", err)
-            raise RuntimeError("Leader position read failed") from err
             if self.state == RECORDING:
                 self._quality["bus_errors"] = self._quality.get("bus_errors", 0) + 1
-
-        for m in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"):
-            key = f"{m}.pos"
-            if key not in action_dict:
-                action_dict[key] = float(self._last_teleop_action.get(key, START_POSE.get(m, 0.0)))
-
-        return action_dict
+            raise RuntimeError("Leader position read failed") from err
 
     def step(self) -> None:
         if self.offline:
@@ -1176,13 +1184,16 @@ class Recorder:
 
         result: dict[str, Any] = {"ok": True}
         if command == "record":
-            if not self.engaged:
-                self._set_engaged(True)
+            # Readiness can disappear between HTTP validation and this tick.
             with self.lock:
+                ready = self.engaged and self._control_ready and not self.estop
                 pending = self.state == PENDING
-            if pending:
-                self._save()
-            self._begin()
+            if not ready:
+                result = {"ok": False, "error": "follower control is not settled yet"}
+            else:
+                if pending:
+                    self._save()
+                self._begin()
         elif command == "stop":
             with self.lock:
                 self.stopped_at_utc = utc_timestamp()
@@ -1665,6 +1676,8 @@ def make_handler(recorder: Recorder):
 
             if path in ("", "/status"):
                 self._reply(recorder.status())
+            elif path == "/motors":
+                self._reply(recorder.motor_telemetry())
             elif path == "/harness/status":
                 self._reply(recorder.harness.status())
             elif path == "/harness/evidence":
@@ -1833,9 +1846,31 @@ COMMANDS = {
 }
 
 
+def release_all_torque(bus):
+    """Try every joint; confirm a lost write acknowledgement with readback."""
+    failures = []
+    for name in bus.motors:
+        try:
+            bus.disable_torque(name, num_retry=3)
+        except Exception as error:
+            try:
+                # A motor can apply the write even when its acknowledgement is
+                # lost. Require two fresh off readings before accepting it.
+                for _ in range(2):
+                    value = bus.read("Torque_Enable", name, normalize=False, num_retry=3)
+                    if value != 0:
+                        raise RuntimeError(f"Torque_Enable readback is {value!r}, expected 0")
+            except Exception as read_error:
+                failures.append(f"{name}: {error}; readback failed: {read_error}")
+            else:
+                log.warning("Torque-off acknowledgement failed on %s; two readbacks confirmed torque off: %s", name, error)
+    if failures:
+        raise RuntimeError("Could not confirm torque off on " + "; ".join(failures))
+
+
 def configure_at_measured_pose(robot):
     """Native configure enables torque; overwrite stale goals before it does."""
-    robot.bus.disable_torque()
+    release_all_torque(robot.bus)
     present = robot.bus.sync_read("Present_Position", num_retry=3)
     if not isinstance(present, dict) or set(present) != set(robot.bus.motors) or not all(np.isfinite(v) for v in present.values()):
         raise RuntimeError("Not all follower motors responded during configuration")
@@ -1843,7 +1878,7 @@ def configure_at_measured_pose(robot):
     try:
         robot.configure()
     except Exception:
-        robot.bus.disable_torque()
+        release_all_torque(robot.bus)
         raise
 
 
@@ -1976,13 +2011,13 @@ def main() -> int:
             # goal registers from live measurements first so reconnect cannot snap
             # toward a previous controller's goal.
             robot.bus.connect()
-            robot.bus.disable_torque()
+            release_all_torque(robot.bus)
             if not robot.is_calibrated:
                 raise RuntimeError("Follower calibration mismatch; calibrate the arm before connecting Homeboy")
             try:
                 configure_at_measured_pose(robot)
             finally:
-                robot.bus.disable_torque()
+                release_all_torque(robot.bus)
             for camera in robot.cameras.values():
                 camera.connect()
             teleop.connect()
@@ -2006,11 +2041,10 @@ def main() -> int:
             )
             dataset.meta._metadata_buffer_size = 1
             log.info("resuming %s at %d episodes", args.repo_id, dataset.meta.total_episodes)
-            # An existing dataset's schema is fixed. Adding frames under camera names
-            # it was not created with fails deep inside the writer, one Record press
-            # later; catching it here says which names it actually wants.
+            # Saved schemas stay fixed; safe_build_dataset_frame includes only
+            # their feature keys. Extra cameras may stream without changing them.
             existing = {key.split(".")[-1] for key in dataset.meta.features if key.startswith(f"{OBS_STR}.images.")}
-            if existing != set(camera_meta):
+            if not existing.issubset(camera_meta):
                 parser.error(
                     f"{args.repo_id} was recorded with cameras {sorted(existing)}, but this run configures "
                     f"{sorted(camera_meta)}. Pass --camera NAME=INDEX matching the dataset, or record into a new "

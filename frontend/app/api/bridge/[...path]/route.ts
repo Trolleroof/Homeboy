@@ -1,3 +1,4 @@
+import { armLease } from "@/lib/arm-lease";
 import { NextResponse } from "next/server";
 import { config, recorderURL, start, status, stop } from "@/lib/robot-bridge";
 import { GET as skillsGET, POST as skillsPOST } from "../../skills/route";
@@ -18,6 +19,7 @@ async function handle(request: Request, context: Context) {
     return NextResponse.json({ error: "Cross-origin robot commands are disabled" }, { status: 403 });
   }
   try {
+    if (post && armLease.held && (group === "recorder" || group === "harness" || (group === "daemon" && action === "start"))) return NextResponse.json({ error: "Finish or cancel calibration first." }, { status: 409 });
     if (parts.length === 1 && group === "skills") return post ? skillsPOST(request) : skillsGET();
     if (parts.length === 1 && group === "video" && !post) return videoGET(request);
     if (parts.length !== 2) return NextResponse.json({ error: "Unknown bridge endpoint" }, { status: 404 });

@@ -127,6 +127,43 @@ class HarnessTests(unittest.TestCase):
             time.sleep(.02)
         self.assertFalse(self.harness.active)
 
+    def test_follower_tracks_each_fresh_leader_command(self):
+        self.recorder.engaged = True
+        self.recorder.robot.bus.torque = True
+        for value in (2, 4, 1):
+            self.recorder.teleop.bus.positions = {k.removesuffix(".pos"): v for k, v in pose(value).items()}
+            _, action = self.recorder._teleop()
+            self.assertEqual(action, pose(value))
+            self.assertEqual(self.recorder.robot.bus.positions, self.recorder.teleop.bus.positions)
+            # The following observation confirms that the commanded pose was reached.
+            self.recorder._teleop()
+            self.assertTrue(self.recorder._control_ready)
+
+    def test_partial_leader_read_never_sends_cached_commands(self):
+        self.recorder.engaged = True
+        self.recorder.robot.bus.torque = True
+        self.recorder.teleop.bus.partial = True
+        before = len(self.recorder.robot.bus.history)
+        observation, action = self.recorder._teleop()
+        self.assertIsNone(observation)
+        self.assertIsNone(action)
+        self.assertEqual(len(self.recorder.robot.bus.history), before)
+        self.assertFalse(self.recorder._control_ready)
+
+    def test_nonfinite_leader_read_is_rejected(self):
+        self.recorder.teleop.bus.positions["gripper"] = float("nan")
+        with self.assertRaises(RuntimeError):
+            self.recorder._read_teleop_action()
+
+    def test_queued_record_rechecks_control_before_capture(self):
+        self.recorder._command = "record"
+        self.recorder.engaged = True
+        self.recorder._control_ready = False
+        with patch.object(self.recorder, "_begin") as begin:
+            self.recorder._dispatch()
+        begin.assert_not_called()
+        self.assertFalse(self.recorder._command_result["ok"])
+
     def test_sms_confirmation_is_bound_to_plan_and_never_starts_motion(self):
         self.add_skill()
         request_id = "a"*32

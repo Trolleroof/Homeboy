@@ -2,6 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import HarnessPanel from "./harness-panel";
+import CalibrationDialog from "./calibration-dialog";
+import FollowerView from "./follower-view";
 
 type RecorderStatus = {
   state: string;
@@ -57,8 +59,11 @@ export default function Home() {
   const [indexing, setIndexing] = useState("");
   const [library, setLibrary] = useState<SavedSkill[]>([]);
   const [busy, setBusy] = useState(false);
+  const [calibrationOpen, setCalibrationOpen] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [forcedCameras, setForcedCameras] = useState<Record<string, boolean>>({});
+  const [feedReloads, setFeedReloads] = useState<Record<string, number>>({});
   const savedCount = useRef<number | null>(null);
   const skillToIndex = useRef<string | null>(null);
 
@@ -73,7 +78,7 @@ export default function Home() {
 
   const indexVideo = useCallback(async (repoId: string, episodeIndex: number) => {
     setIndexing(`${repoId}:${episodeIndex}`); setError("");
-    setNotice("Reading the saved video with EmbeddingGemma 2…");
+        setNotice("Reading the video…");
     try {
       const response = await fetch("/api/skills", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -81,7 +86,7 @@ export default function Home() {
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Video content could not be indexed.");
-      setNotice("Video content indexed. You can now search what the camera recorded.");
+      setNotice("Searchable now.");
       await refreshLibrary();
     } catch (reason) { setError((reason as Error).message); }
     finally { setIndexing(""); }
@@ -108,8 +113,8 @@ export default function Home() {
             body: JSON.stringify({ action: "teach", repo_id: next.repo_id, episode_index: next.saved_episodes - 1, description: skill }),
           }).then(async (res) => {
             const body = await res.json();
-            if (!res.ok) throw new Error(body.error ?? "The episode saved but its skill index failed.");
-            setNotice("Saved to your skill library. Indexing the recorded video next…");
+            if (!res.ok) throw new Error(body.error ?? "Saved, but search indexing failed.");
+            setNotice("Saved. Reading the video…");
             void refreshLibrary();
             await indexVideo(next.repo_id, next.saved_episodes - 1);
           }).catch((reason: unknown) => setError((reason as Error).message));
@@ -149,15 +154,47 @@ export default function Home() {
       if (response.ok && !next.offline) {
         setStatus(next);
         if (test(next)) return next;
-        if (next.state === "estopped") throw new Error("Robot is stopped. Check the workspace, then use Reset stop before teaching.");
+        if (next.state === "estopped") throw new Error("Stopped. Look at the arm, then hit Reset.");
       }
       if (next.offline) {
         const daemon = await call("daemon/status") as { running: boolean; log: string[] };
-        if (!daemon.running) throw new Error(`Recorder could not start. ${daemon.log.slice(-3).join(" ") || "Check that both arms are plugged in and powered."}`);
+        if (!daemon.running) throw new Error(`Didn't start. ${daemon.log.slice(-3).join(" ") || "Plug in both arms and turn them on."}`);
       }
       await new Promise((resolve) => window.setTimeout(resolve, 700));
     }
-    throw new Error("The robot bridge did not become ready. Check the local Homeboy bridge and device connections.");
+    throw new Error("Robot didn't connect. Check the cables.");
+  }
+
+  async function startBridge(task: string) {
+    const daemon = await call("daemon/status") as { running?: boolean };
+    if (daemon.running) return;
+    const [arms, cameraConfig] = await Promise.all([call("config/arms"), call("config/cameras")]);
+    const result = await call("daemon/start", {
+      repoId: "homeboy/speedhacks-wrist-v1",
+      task,
+      fps: 30,
+      robotPort: arms.robotPort,
+      teleopPort: arms.teleopPort,
+      cameras: cameraConfig.cameras,
+      deltaLimit: 25,
+      autoEstop: false,
+      engageOnStart: false,
+      commitSeconds: 6,
+    });
+    if (result.ok === false && !String(result.error ?? "").includes("already")) throw new Error(result.error ?? "Couldn't start.");
+  }
+
+  async function connectCameras() {
+    setBusy(true); setError(""); setNotice("Connecting cameras…");
+    try {
+      if (status.offline) {
+        await startBridge(description.trim() || "Camera preview");
+        await waitFor((next) => Object.values(next.data_quality?.camera_streaming ?? {}).some(Boolean));
+      }
+      setForcedCameras({ wrist: true, overhead: true });
+      setNotice("");
+    } catch (reason) { setNotice(""); setError((reason as Error).message); }
+    finally { setBusy(false); }
   }
 
   async function startTeaching() {
@@ -166,39 +203,23 @@ export default function Home() {
     try {
       let current = status;
       if (current.offline) {
-        setNotice("Connecting the SO-101 bridge…");
-        const daemon = await call("daemon/status") as { running?: boolean };
-        if (!daemon.running) {
-          const [arms, cameraConfig] = await Promise.all([call("config/arms"), call("config/cameras")]);
-          const result = await call("daemon/start", {
-            repoId: "homeboy/speedhacks-wrist-v1",
-            task: description.trim(),
-            fps: 30,
-            robotPort: arms.robotPort,
-            teleopPort: arms.teleopPort,
-            cameras: cameraConfig.cameras,
-            deltaLimit: 25,
-            autoEstop: false,
-            engageOnStart: false,
-            commitSeconds: 6,
-          });
-          if (result.ok === false && !String(result.error ?? "").includes("already")) throw new Error(result.error ?? "Could not start the robot recorder.");
-        }
+        setNotice("Connecting…");
+        await startBridge(description.trim());
         current = await waitFor((next) => next.state === "idle" && next.data_quality?.ready === true);
       }
-      if (current.state === "estopped") throw new Error("Robot is stopped. Check the workspace, then use Reset stop before teaching.");
-      if (current.state === "recording" || current.state === "saving") throw new Error("A recording is already in progress.");
-      if (current.state === "pending") throw new Error("Save or discard the stopped take before starting another demonstration.");
+      if (current.state === "estopped") throw new Error("Stopped. Look at the arm, then hit Reset.");
+      if (current.state === "recording" || current.state === "saving") throw new Error("Already recording.");
+      if (current.state === "pending") throw new Error("Save or toss this one first.");
       if (!current.data_quality?.ready) {
         const issues = current.data_quality?.issues?.join(" · ");
-        throw new Error(issues || "The recorder is not ready. Check the camera and dataset setup.");
+        throw new Error(issues || "Not ready. Check the camera.");
       }
       if (!current.teleop?.ready) {
-        setNotice("Checking the leader and follower connection…");
+        setNotice("Checking the arms…");
         current = await waitFor((next) => next.teleop?.ready === true && next.data_quality?.ready === true, 8_000);
       }
       if (!current.teleop?.engaged) {
-        setNotice("Syncing leader and follower…");
+        setNotice("Linking the arms…");
         await call("recorder/engage", {});
         current = await waitFor((next) => next.teleop?.record_ready === true, 8_000);
       }
@@ -207,7 +228,7 @@ export default function Home() {
       skillToIndex.current = description.trim();
       await call("recorder/record", {});
       await waitFor((next) => next.state === "recording" && next.frames > 0, 8_000);
-      setNotice("Teaching live — move the leader arm through the task. Stop when the demonstration is done.");
+      setNotice("Go. Hit stop when you're done.");
       await refreshStatus();
     } catch (reason) {
       setError((reason as Error).message);
@@ -221,7 +242,7 @@ export default function Home() {
     setBusy(true); setError("");
     try {
       await call("recorder/stop", {});
-      setNotice("Take captured. Save it to keep this demonstration, or discard it and try again.");
+      setNotice("Stopped. Save it or toss it.");
       await refreshStatus();
     } catch (reason) { setError((reason as Error).message); }
     finally { setBusy(false); }
@@ -229,14 +250,14 @@ export default function Home() {
 
   async function saveTake() {
     setBusy(true); setError("");
-    try { await call("recorder/save", {}); setNotice("Saving the episode and video…"); await refreshStatus(); }
+    try { await call("recorder/save", {}); setNotice("Saving…"); await refreshStatus(); }
     catch (reason) { setError((reason as Error).message); }
     finally { setBusy(false); }
   }
 
   async function discardTake() {
     setBusy(true); setError("");
-    try { await call("recorder/discard", {}); skillToIndex.current = null; setNotice("Take discarded."); await refreshStatus(); }
+    try { await call("recorder/discard", {}); skillToIndex.current = null; setNotice("Tossed."); await refreshStatus(); }
     catch (reason) { setError((reason as Error).message); }
     finally { setBusy(false); }
   }
@@ -246,7 +267,7 @@ export default function Home() {
     try {
       await call("recorder/estop", { reason: "operator stop from Homeboy skillbook" });
       skillToIndex.current = null;
-      setNotice("Robot stopped. Re-arm only after checking the workspace and arm position.");
+      setNotice("Stopped. Look at the arm, then hit Reset.");
       await refreshStatus();
     } catch (reason) { setError((reason as Error).message); }
   }
@@ -276,62 +297,57 @@ export default function Home() {
   const preflightReady = bridgeOnline && status.teleop?.ready === true && status.data_quality?.ready === true;
   const linked = preflightReady && status.teleop?.engaged === true;
   const shortTime = `${Math.floor(status.elapsed_s / 60).toString().padStart(2, "0")}:${Math.floor(status.elapsed_s % 60).toString().padStart(2, "0")}`;
-  const wristStreaming = bridgeOnline && status.data_quality?.camera_streaming?.wrist === true;
+  const wristStreaming = bridgeOnline && (status.data_quality?.camera_streaming?.wrist === true || forcedCameras.wrist === true);
+  const overheadStreaming = bridgeOnline && (status.data_quality?.camera_streaming?.overhead === true || forcedCameras.overhead === true);
   const teachStage = recording ? "recording" : pending ? "save" : linked ? "ready" : bridgeOnline ? "syncing" : "offline";
-  const connectionText = !bridgeOnline ? "Robot not connected" : !status.teleop?.ready ? "Checking leader / follower" : !status.data_quality?.ready ? "Checking camera and dataset" : linked ? "Teleop synced" : "Leader / follower connected";
+  const connectionText = !bridgeOnline ? "Offline" : !status.teleop?.ready ? "Checking arms" : !status.data_quality?.ready ? "Checking camera" : linked ? "Ready" : "Arms on";
 
   return (
     <main className="app-shell">
+      {calibrationOpen && <CalibrationDialog onClose={() => { setCalibrationOpen(false); void refreshStatus(); }} />}
       <aside className="rail">
         <a className="brand" href="#top" aria-label="Homeboy home"><span className="brand-mark"><span /><span /><span /></span><span>homeboy<span className="brand-period">.</span></span></a>
-        <div className="rail-label">WORKSPACE</div>
         <nav className="nav-list" aria-label="Main navigation">
-          <a className="nav-item" href="#prompt"><span className="nav-icon">✳</span>Prompt robot</a>
-          <a className="nav-item active" href="#teach"><span className="nav-icon">↗</span>Teach & recall</a>
-          <a className="nav-item" href="#library"><span className="nav-icon">▧</span>Skill library<span className="nav-count">{library.length}</span></a>
+          <a className="nav-item" href="#prompt"><span className="nav-icon">✳</span>Ask</a>
+          <a className="nav-item active" href="#teach"><span className="nav-icon">↗</span>Teach</a>
+          <a className="nav-item" href="#library"><span className="nav-icon">▧</span>Saved<span className="nav-count">{library.length}</span></a>
+          <button type="button" className="nav-item calibration-nav" disabled={busy} onClick={() => setCalibrationOpen(true)}><span className="nav-icon" aria-hidden="true">↻</span>Calibrate</button>
         </nav>
         <div className="rail-spacer" />
-        <div className="rail-cell">
-          <div className="cell-label">ROBOT CELL</div>
-          <div className="cell-name"><span className={`pulse ${linked ? "live" : ""}`} />SO-101 · Leader / Follower</div>
-          <div className="cell-state">{connectionText}</div>
-        </div>
-        <div className="rail-foot">BUILT FOR THE MOMENTS<br />YOU DON&apos;T WANT TO REPEAT.</div>
       </aside>
 
       <section className="main-column" id="top">
         <header className="topbar">
-          <div className="crumb"><span>MY WORKSPACE</span><b>/</b><strong>SO-101 SKILLBOOK</strong></div>
-          <div className="topbar-actions">{bridgeOnline && status.state === "estopped" && <button className="quiet-button" onClick={() => { void call("recorder/rearm", {}).then(() => refreshStatus()).catch((reason: Error) => setError(reason.message)); }}>Reset stop</button>}{bridgeOnline && <button className="estop-button" onClick={() => void emergencyStop()} aria-label="Emergency stop robot">STOP</button>}<div className={`connection-pill ${linked ? "connected" : ""}`}><span className="pulse" />{connectionText}</div></div>
+          <div className="crumb"><strong>SKILLBOOK</strong></div>
+          <div className="topbar-actions">{bridgeOnline && status.state === "estopped" && <button className="quiet-button" onClick={() => { void call("recorder/rearm", {}).then(() => refreshStatus()).catch((reason: Error) => setError(reason.message)); }}>Reset</button>}{bridgeOnline && <button className="estop-button" onClick={() => void emergencyStop()} aria-label="Emergency stop robot">STOP</button>}<div className={`connection-pill ${linked ? "connected" : ""}`}><span className="pulse" />{connectionText}</div></div>
         </header>
 
         <div className="content">
           <section className="intro">
-            <div className="intro-copy"><div className="eyebrow"><span className="eyebrow-line" />YOUR ROBOT, WITH A MEMORY</div><h1>Teach it once.<br /><em>Get that time back.</em></h1><p>Show Homeboy a task with the leader arm. It saves the motion and video together, so your team can find the right demonstration next time.</p></div>
-            <div className="intro-art" aria-hidden="true"><RobotSketch /></div>
+            <div className="intro-copy"><h1>Teach it once.</h1></div>
+            <div className="intro-art"><FollowerView /></div>
           </section>
 
           <HarnessPanel />
           <section className="teach-layout" id="teach">
             <aside className="card guide-card" aria-label="Teaching guide">
-              <div className="card-topline"><span className="step-tag">YOUR QUICK GUIDE</span><span className="sparkle">✳</span></div>
-              <h2>One quick demo.<br /><em>Saved for next time.</em></h2>
+              <h2>Do this.</h2>
               <div className="guide-steps">
-                <div className={`guide-step ${teachStage === "ready" || teachStage === "recording" || teachStage === "save" ? "complete" : "current"}`}><span>1</span><div><strong>Describe the task</strong><p>Use a short label you’ll recognize later.</p></div></div>
-                <div className={`guide-step ${teachStage === "recording" ? "current" : teachStage === "save" ? "complete" : ""}`}><span>2</span><div><strong>Move the leader arm</strong><p>Wait for teleop to sync, then guide the follower through the task.</p></div></div>
-                <div className={`guide-step ${teachStage === "save" ? "current" : ""}`}><span>3</span><div><strong>Stop and save</strong><p>Homeboy keeps the motion episode and camera recording together.</p></div></div>
-                <div className="guide-safety"><strong>Before you begin</strong><p>Clear the arm&apos;s path and keep a hand near the physical stop. Starting teleop can move the follower as it syncs to the leader.</p></div>
+                <div className={`guide-step ${teachStage === "ready" || teachStage === "recording" || teachStage === "save" ? "complete" : "current"}`}><span>1</span><div><strong>Name it</strong></div></div>
+                <div className={`guide-step ${teachStage === "recording" ? "current" : teachStage === "save" ? "complete" : ""}`}><span>2</span><div><strong>Move the arm</strong></div></div>
+                <div className={`guide-step ${teachStage === "save" ? "current" : ""}`}><span>3</span><div><strong>Save it</strong></div></div>
+                <div className="guide-safety"><strong>Clear the path. Hand on the stop.</strong><p>The arm can jump when it links up.</p></div>
               </div>
             </aside>
 
             <div className="teach-main">
             <article className="card teach-card">
-              <div className="card-topline"><span className="step-tag">01 <span>·</span> TEACH A SKILL</span><span className="tiny-live"><i className={recording ? "active" : ""} />{recording ? "RECORDING" : "READY WHEN YOU ARE"}</span></div>
-              <label className="field-label" htmlFor="skill-description">What should the robot learn?</label>
-              <textarea id="skill-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Describe the task in a few words…" rows={2} disabled={recording || pending} />
+              <div className="card-topline"><span className="step-tag">TEACH</span><span className="tiny-live"><i className={recording ? "active" : ""} />{recording ? "REC" : "READY"}</span></div>
+              <label className="field-label" htmlFor="skill-description">Name it</label>
+              <textarea id="skill-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Block into the bin" rows={2} disabled={recording || pending} />
               <div className="teach-bottom">
-                <div className="camera-pips"><span className="camera-icon">◉</span><span>Wrist preview · synced motion</span></div>
-                {recording ? <button className="primary-button stop-button" onClick={() => void stopTeaching()} disabled={busy}><span className="stop-square" />{busy ? "Stopping…" : "Stop teaching"}</button> : pending ? <div className="take-actions"><button className="quiet-button" onClick={() => void discardTake()} disabled={busy}>Discard</button><button className="primary-button" onClick={() => void saveTake()} disabled={busy}>Save demonstration <span>→</span></button></div> : <button className="primary-button" onClick={() => void startTeaching()} disabled={busy || !description.trim()}><span className="button-dot" />{busy ? "Getting the robot ready…" : "Start teaching"}<span>→</span></button>}
+                <div className="camera-pips"><span className="camera-icon">◉</span><span>Both cameras</span></div>
+                {recording ? <button className="primary-button stop-button" onClick={() => void stopTeaching()} disabled={busy}><span className="stop-square" />{busy ? "Stopping…" : "Stop"}</button> : pending ? <div className="take-actions"><button className="quiet-button" onClick={() => void discardTake()} disabled={busy}>Toss</button><button className="primary-button" onClick={() => void saveTake()} disabled={busy}>Save <span>→</span></button></div> : <button className="primary-button" onClick={() => void startTeaching()} disabled={busy || !description.trim()}><span className="button-dot" />{busy ? "Wait…" : "Start"}<span>→</span></button>}
               </div>
               {(notice || error) && <div className={`feedback ${error ? "error" : ""}`} role="status" aria-live="polite">{error || notice}</div>}
               {(status.started_at || status.stopped_at || status.saved_at) && <div className="recording-timestamps" aria-label="Take timestamps">{status.started_at && <span>Started {new Date(status.started_at).toLocaleString()}</span>}{status.stopped_at && <span>Stopped {new Date(status.stopped_at).toLocaleString()}</span>}{status.saved_at && <span>Saved {new Date(status.saved_at).toLocaleString()}</span>}</div>}
@@ -339,31 +355,29 @@ export default function Home() {
             </article>
 
             <section className="camera-section">
-              <div className="section-heading"><div><span className="step-tag">LIVE VIEW</span><h2>Wrist camera</h2></div><span className="section-sub">The recorder&apos;s live camera feed.</span></div>
-              <figure className="camera-frame wrist-frame"><figcaption><span className={`camera-led ${wristStreaming ? "on" : ""}`} /><strong>WRIST</strong><span>Gripper view</span><small>{wristStreaming ? "LIVE" : "WAITING"}</small></figcaption>{wristStreaming ? <MjpegStream key="wrist" src="/api/bridge/stream/wrist" alt="Live wrist camera feed" /> : <div className="camera-placeholder"><CameraMark /><span>{bridgeOnline ? "Waiting for wrist camera frames" : "Start the local recorder to connect the camera"}</span></div>}</figure>
+              <div className="section-heading"><div><h2>Camera</h2></div></div>
+              <div className="camera-grid">
+                <figure className="camera-frame wrist-frame"><figcaption><span className={`camera-led ${wristStreaming ? "on" : ""}`} /><strong>WRIST</strong><small>{wristStreaming ? "LIVE" : "WAIT"}</small>{wristStreaming && <button type="button" className="camera-reconnect" onClick={() => setFeedReloads((prev) => ({ ...prev, wrist: (prev.wrist ?? 0) + 1 }))}>Reconnect</button>}</figcaption>{wristStreaming ? <MjpegStream key={`wrist-${feedReloads.wrist ?? 0}`} src="/api/bridge/stream/wrist" alt="Live wrist camera" /> : <div className="camera-placeholder"><CameraMark /><span>{bridgeOnline ? "No picture yet" : "Robot is off"}</span><button type="button" className="camera-connect" disabled={busy} onClick={() => bridgeOnline ? setForcedCameras((prev) => ({ ...prev, wrist: true })) : void connectCameras()}>{bridgeOnline ? "Reconnect feed" : "Connect cameras"}</button></div>}</figure>
+                <figure className="camera-frame wrist-frame"><figcaption><span className={`camera-led ${overheadStreaming ? "on" : ""}`} /><strong>OVERHEAD</strong><small>{overheadStreaming ? "LIVE" : "WAIT"}</small>{overheadStreaming && <button type="button" className="camera-reconnect" onClick={() => setFeedReloads((prev) => ({ ...prev, overhead: (prev.overhead ?? 0) + 1 }))}>Reconnect</button>}</figcaption>{overheadStreaming ? <MjpegStream key={`overhead-${feedReloads.overhead ?? 0}`} src="/api/bridge/stream/overhead" alt="Live overhead camera" /> : <div className="camera-placeholder"><CameraMark /><span>{bridgeOnline ? "No picture yet" : "Robot is off"}</span><button type="button" className="camera-connect" disabled={busy} onClick={() => bridgeOnline ? setForcedCameras((prev) => ({ ...prev, overhead: true })) : void connectCameras()}>{bridgeOnline ? "Reconnect feed" : "Connect cameras"}</button></div>}</figure>
+              </div>
             </section>
             </div>
           </section>
 
           <section className="library-section" id="library">
-            <div className="section-heading"><div><span className="step-tag">02 <span>·</span> YOUR SKILL LIBRARY</span><h2>Bring a good take back.</h2></div><span className="episode-count">{library.length} SAVED {library.length === 1 ? "DEMO" : "DEMOS"}</span></div>
-            <form className="search-form" onSubmit={(event) => void searchSkills(event)}><span className="search-glyph">⌕</span><input aria-label="Search saved demonstrations" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Try ‘a gripper picking up an orange cube’" /><button type="submit" disabled={busy || !query.trim()}>{busy ? "Searching…" : "Find a demo"}<span>→</span></button></form>
-            <div className="search-foot"><span>SEARCHES WHAT THE CAMERA RECORDED</span><span>{searchMode ? `MATCHING: ${searchMode.toUpperCase()}` : "NATIVE EMBEDDINGGEMMA 2 VIDEO EMBEDDINGS"}</span></div>
-            {searchRunId && <div className="search-foot"><span>LOCAL REQUEST TRACE · NOT A DIAL OR KEEWANO EVENT</span><a href={`/api/events?run_id=${encodeURIComponent(searchRunId)}`} target="_blank" rel="noreferrer">VIEW TRACE ↗</a></div>}
-            {results.length > 0 && <div className="results-grid">{results.map((skill) => <article className="result-card" key={`${skill.repo_id}-${skill.episode_index}`}><div className="result-title"><span className="result-icon">↗</span><div><strong>{`Recording ${skill.episode_index + 1}`}</strong><small>{skill.repo_id} · episode {skill.episode_index}</small></div><span className="match-score">{skill.score.toFixed(3)}<small>SIMILARITY</small></span></div><video controls preload="metadata" src={skill.video_url} /><div className="result-foot"><span>{`Video content · ${skill.sampled_frames} sampled frames`}</span><span>DEMO {String(skill.episode_index + 1).padStart(2, "0")}</span></div></article>)}</div>}
-            {searchMode && results.length === 0 && <div className="empty-results"><span>⌕</span><strong>No close match.</strong><p>{searchMessage || "Teach a real task demonstration before searching for it."} A similar clip still needs human review.</p></div>}
-            {!searchMode && library.length > 0 && <div className="results-grid">{library.map((skill) => <article className="result-card" key={`${skill.repo_id}-${skill.episode_index}`}><div className="result-title"><span className="result-icon">↗</span><div><strong>{`Recording ${skill.episode_index + 1}`}</strong><small>{skill.repo_id} · episode {skill.episode_index}</small></div><span className="library-tag">{skill.video_indexed ? "VIDEO INDEXED" : "SAVED"}</span></div><video controls preload="metadata" src={`/api/bridge/video?repo_id=${encodeURIComponent(skill.repo_id)}&path=${encodeURIComponent(skill.video_path)}#t=${skill.video_from}`} /><div className="result-foot"><span>{skill.video_indexed ? "Searchable by recorded video content" : "Video content not indexed yet"}</span><button className="quiet-button" disabled={Boolean(indexing)} onClick={() => void indexVideo(skill.repo_id, skill.episode_index)}>{indexing === `${skill.repo_id}:${skill.episode_index}` ? "Indexing video…" : skill.video_indexed ? "Reindex video" : "Index video"}</button></div></article>)}</div>}
-            {!searchMode && library.length === 0 && <div className="library-empty"><span className="empty-stack">▤</span><p>Your saved demonstrations will appear here.<br />Teach a skill above to start your library.</p></div>}
+            <div className="section-heading"><div><h2>Saved</h2></div><span className="episode-count">{library.length}</span></div>
+            <form className="search-form" onSubmit={(event) => void searchSkills(event)}><span className="search-glyph">⌕</span><input aria-label="Search saved demonstrations" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="orange cube" /><button type="submit" disabled={busy || !query.trim()}>{busy ? "Searching…" : "Search"}<span>→</span></button></form>
+            {searchRunId && <div className="search-foot"><a href={`/api/events?run_id=${encodeURIComponent(searchRunId)}`} target="_blank" rel="noreferrer">Trace</a></div>}
+            {results.length > 0 && <div className="results-grid">{results.map((skill) => <article className="result-card" key={`${skill.repo_id}-${skill.episode_index}`}><div className="result-title"><span className="result-icon">↗</span><div><strong>{`Take ${skill.episode_index + 1}`}</strong><small>{skill.repo_id}</small></div><span className="match-score">{skill.score.toFixed(2)}<small>MATCH</small></span></div><video controls preload="metadata" src={skill.video_url} /><div className="result-foot"><span>{`${skill.sampled_frames} frames`}</span><span>{String(skill.episode_index + 1).padStart(2, "0")}</span></div></article>)}</div>}
+            {searchMode && results.length === 0 && <div className="empty-results"><span>⌕</span><strong>Nothing close.</strong><p>{searchMessage || "Teach one first."}</p></div>}
+            {!searchMode && library.length > 0 && <div className="results-grid">{library.map((skill) => <article className="result-card" key={`${skill.repo_id}-${skill.episode_index}`}><div className="result-title"><span className="result-icon">↗</span><div><strong>{`Take ${skill.episode_index + 1}`}</strong><small>{skill.repo_id}</small></div><span className="library-tag">{skill.video_indexed ? "SEARCHABLE" : "SAVED"}</span></div><video controls preload="metadata" src={`/api/bridge/video?repo_id=${encodeURIComponent(skill.repo_id)}&path=${encodeURIComponent(skill.video_path)}#t=${skill.video_from}`} /><div className="result-foot"><span>{skill.video_indexed ? "Searchable" : "Not searchable yet"}</span><button className="quiet-button" disabled={Boolean(indexing)} onClick={() => void indexVideo(skill.repo_id, skill.episode_index)}>{indexing === `${skill.repo_id}:${skill.episode_index}` ? "Indexing…" : skill.video_indexed ? "Index again" : "Index"}</button></div></article>)}</div>}
+            {!searchMode && library.length === 0 && <div className="library-empty"><span className="empty-stack">▤</span><p>Nothing here yet.</p></div>}
           </section>
-          <footer className="page-foot"><span>HOMEBOY SKILLBOOK</span><span>LOCAL ROBOT DATA STAYS ON THIS MACHINE</span></footer>
+          <footer className="page-foot"><span>HOMEBOY</span><span>STAYS ON THIS COMPUTER</span></footer>
         </div>
       </section>
     </main>
   );
-}
-
-function RobotSketch() {
-  return <svg viewBox="0 0 380 270" fill="none" xmlns="http://www.w3.org/2000/svg"><path className="sketch-grid" d="M24 228H354M48 198H322M73 168H291M99 138H262M124 108H233M149 78H204M52 245L188 65M103 245L213 65M154 245L238 65M205 245L263 65M256 245L288 65M307 245L313 65"/><path className="robot-shadow" d="M88 218h88l16 18H70l18-18Z"/><path className="robot-base" d="M95 214v-15h70v15"/><path className="robot-segment" d="m129 198-10-58 42-24 35 31-23 34-10 17"/><path className="robot-outline" d="m119 140 42-24 35 31m-58-7 38 38m20-31 22-53m-22 53 42 19m-42-19-23 34m-62 19h70m25-31 22 13 5 15m-5-15 8-12"/><circle className="robot-joint" cx="119" cy="140" r="9"/><circle className="robot-joint" cx="161" cy="116" r="9"/><circle className="robot-joint" cx="196" cy="147" r="9"/><circle className="robot-joint" cx="218" cy="94" r="8"/><circle className="robot-joint" cx="215" cy="200" r="5"/><path className="robot-grip" d="m239 178 9 4m-9-4 2-9m7 13 8 2m-8-2 3-8"/><path className="task-block" d="M278 206h22v22h-22z"/><path className="task-bin" d="M268 236h44l-5 15h-34l-5-15Z"/><path className="motion-dash" d="M244 155c21 3 30 12 38 29"/><path className="motion-arrow" d="m274 184 9 1-3-8"/><text className="sketch-label" x="60" y="45">SO-101 / LEADER-FOLLOWER</text><text className="sketch-coord" x="289" y="196">TARGET</text></svg>;
 }
 
 function CameraMark() {
@@ -382,6 +396,6 @@ function MjpegStream({ src, alt }: { src: string; alt: string }) {
     {/* Next Image optimization cannot process the recorder's multipart MJPEG stream. */}
     {/* eslint-disable-next-line @next/next/no-img-element */}
     <img src={`${src}?retry=${attempt}`} alt={alt} onLoad={() => { if (timer.current !== null) window.clearTimeout(timer.current); setFailed(false); }} onError={() => setFailed(true)} />
-    {failed && <div className="stream-error"><span>Camera feed stopped responding.</span><button type="button" onClick={() => { setFailed(false); setAttempt((value) => value + 1); }}>Reconnect feed</button></div>}
+    {failed && <div className="stream-error"><span>Camera died.</span><button type="button" onClick={() => { setFailed(false); setAttempt((value) => value + 1); }}>Try again</button></div>}
   </div>;
 }
