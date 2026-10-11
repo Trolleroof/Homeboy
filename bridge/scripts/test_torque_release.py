@@ -1,5 +1,6 @@
 """Torque-off confirmation with lost or fault-flagged write acknowledgements."""
 import unittest
+import threading
 from unittest.mock import Mock, patch
 
 import record_server
@@ -9,6 +10,28 @@ COMM_SUCCESS, COMM_RX_TIMEOUT = 0, -3000
 
 
 class TorqueReleaseTests(unittest.TestCase):
+    def test_emergency_stop_uses_per_joint_verified_release(self):
+        recorder = record_server.Recorder.__new__(record_server.Recorder)
+        recorder.hw_lock = threading.RLock()
+        recorder.robot = Mock()
+        recorder.teleop = Mock()
+        with patch.object(record_server, "release_all_torque") as release:
+            self.assertEqual(recorder._kill_torque(), ["follower", "teleop"])
+        self.assertEqual(release.call_args_list[0].args, (recorder.robot.bus,))
+        self.assertEqual(release.call_args_list[1].args, (recorder.teleop.bus,))
+
+    def test_fault_prevents_configuration_and_reports_named_motor(self):
+        robot = Mock()
+        robot.bus.motors = {"gripper": Mock(id=6, model="sts3215")}
+        robot.bus._read.return_value = (0, COMM_SUCCESS, 0x20)
+        robot.bus._is_comm_success.return_value = True
+        with patch.object(record_server, "release_all_torque"), \
+             patch("lerobot.motors.motors_bus.get_address", return_value=(40, 1)):
+            with self.assertRaisesRegex(RuntimeError, "gripper.*overload"):
+                record_server.configure_at_measured_pose(robot)
+        robot.configure.assert_not_called()
+        robot.bus.sync_write.assert_not_called()
+
     def bus(self, readback):
         bus = Mock()
         bus.motors = {"shoulder_lift": object(), "elbow_flex": object()}

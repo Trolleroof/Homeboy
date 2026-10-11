@@ -448,6 +448,7 @@ class Recorder:
         self._follower_motors: dict[str, bool] = {}
         self._teleop_temps: dict[str, int] = {}
         self._follower_temps: dict[str, int] = {}
+        self._motor_faults: dict[str, dict[str, str]] = {}
         self._hardware: dict[str, Any] = {}
         self._quality: dict[str, Any] = {}
         self._camera_fresh_at: dict[str, float] = {}
@@ -808,7 +809,7 @@ class Recorder:
                 if bus is None:
                     continue
                 try:
-                    bus.disable_torque(num_retry=3)
+                    release_all_torque(bus)
                     killed.append(role)
                 except Exception as err:  # noqa: BLE001
                     log.error("could not cut torque on %s: %s", role, err)
@@ -1539,6 +1540,9 @@ class Recorder:
                                 # During recording, positions are actively read every tick, so motors are alive
                                 setattr(self, attr_probe, {name: True for name in getattr(bus, "motors", {})})
                             setattr(self, attr_temp, motor_temperatures(bus))
+                            if not self.engaged and self.calib is None:
+                                role = "follower" if arm is self.robot else "teleop"
+                                self._motor_faults[role] = read_motor_faults(bus)
                     except Exception:  # noqa: BLE001
                         pass
 
@@ -1567,6 +1571,13 @@ class Recorder:
                 temperatures=self._follower_temps,
                 message="torque cut by the e-stop" if self.estop else None,
             )
+            for role, health in (("teleop", teleop), ("follower", follower)):
+                faults = self._motor_faults.get(role, {})
+                if faults:
+                    health["faults"] = dict(faults)
+                    health["status"] = "fail"
+                    health["message"] = "; ".join(f"{joint}: {reason}" for joint, reason in faults.items())
+                    health["motors_ok"] = max(0, health["motors_ok"] - len(faults))
 
             cameras: dict[str, Any] = {}
             for name, index in self.camera_meta.items():
@@ -1902,6 +1913,25 @@ COMMANDS = {
 }
 
 
+def read_motor_faults(bus) -> dict[str, str]:
+    """Read status flags without energizing motors or treating a reply as health."""
+    from lerobot.motors.motors_bus import get_address
+
+    faults = {}
+    for name, motor in bus.motors.items():
+        try:
+            address, length = get_address(bus.model_ctrl_table, motor.model, "Torque_Enable")
+            _, comm, error = bus._read(address, length, motor.id, num_retry=0, raise_on_error=False)
+            if not bus._is_comm_success(comm):
+                faults[name] = "no valid response; inspect power and motor cable"
+            elif error:
+                label = "overload" if error & 0x20 else "motor fault"
+                faults[name] = f"{label} ({error:#04x}); support the arm, remove load, and power-cycle its motor supply"
+        except Exception as exc:
+            faults[name] = f"fault check failed: {exc}"
+    return faults
+
+
 def read_torque_enable(bus, name):
     """Raw Torque_Enable that tolerates a latched fault bit in the status byte.
 
@@ -1947,6 +1977,9 @@ def release_all_torque(bus):
 def configure_at_measured_pose(robot):
     """Native configure enables torque; overwrite stale goals before it does."""
     release_all_torque(robot.bus)
+    faults = read_motor_faults(robot.bus)
+    if faults:
+        raise RuntimeError("Follower cannot engage: " + "; ".join(f"{name}: {reason}" for name, reason in faults.items()))
     present = robot.bus.sync_read("Present_Position", normalize=False, num_retry=3)
     if not isinstance(present, dict) or set(present) != set(robot.bus.motors) or not all(np.isfinite(v) for v in present.values()):
         raise RuntimeError("Not all follower motors responded during configuration")
@@ -2168,10 +2201,13 @@ def main() -> int:
         # Startup can fail after opening only one bus or camera.
         for arm in (robot, teleop):
             try:
-                arm.bus.disable_torque()
-                arm.bus.disconnect()
-            except Exception:
-                pass
+                if arm.bus.is_connected:
+                    try:
+                        release_all_torque(arm.bus)
+                    finally:
+                        arm.bus.disconnect(disable_torque=False)
+            except Exception as error:
+                log.warning("startup cleanup: %s", error)
         for camera in robot.cameras.values():
             try:
                 camera.disconnect()
@@ -2205,8 +2241,15 @@ def main() -> int:
         server.shutdown()
         recorder._kill_torque()
         if not args.offline:
-            robot.disconnect()
-            teleop.disconnect()
+            # Torque-off has already been attempted per joint and verified.
+            # Close both ports even if one native disconnect would raise on a
+            # fault-flagged torque acknowledgement.
+            try:
+                robot.bus.disconnect(disable_torque=False)
+            finally:
+                teleop.bus.disconnect(disable_torque=False)
+                for camera in robot.cameras.values():
+                    camera.disconnect()
     return 0
 
 
