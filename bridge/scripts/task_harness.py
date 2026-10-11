@@ -310,6 +310,8 @@ class TaskHarness:
             return {"ok": True, "episode": candidate["episode"], "description": candidate["description"],
                     "score": candidate["score"], "already_imported": existing is not None, "import": imported,
                     "review_required": not bool(existing and existing.get("approved"))}
+        if action == "do":
+            return self._do(payload)
         if action == "approve":
             with self.lock:
                 if self.active:
@@ -354,6 +356,58 @@ class TaskHarness:
             job = self._plan if action == "plan" else self._execute_codex
             threading.Thread(target=self._job, args=(job, payload), daemon=True).start()
             return {"ok": True, "run_id": self.run["id"]}
+
+    MIN_DIRECT_SCORE = .7
+
+    def _do(self, payload):
+        """One step for the operator: retrieve the most similar saved take with
+        EmbeddingGemma, treat the request as approved, and replay it. Speed and
+        hold policy, the e-stop and every motion bound still apply."""
+        prompt = payload.get("prompt")
+        if not isinstance(prompt, str) or not 1 <= len(prompt.strip()) <= 500:
+            raise ValueError("Enter the task you want the robot to handle")
+        prompt = prompt.strip()
+        candidates = self.memory.find_recordings(prompt)
+        if not candidates:
+            raise ValueError("No saved, indexed recordings were found. Save and index a demonstration first.")
+        best = candidates[0]
+        if best["score"] < self.MIN_DIRECT_SCORE:
+            raise ValueError(f"No saved take is similar enough to that request (best match {best['score']:.2f}).")
+        # With few saved takes the nearest one is always "close", so the request must
+        # also describe the same object, color, action and goal as that take.
+        requested = task_contract(prompt)
+        if requested is None:
+            raise ValueError("That request isn't a block pick-and-place this robot has been taught.")
+        skill = next((s for s in self.catalog() if s["episode"] == best["episode"]), None)
+        if skill is None:
+            description = best.get("description") or prompt
+            self.import_episode({"episode": best["episode"], "description": description})
+            skill = next(s for s in self.catalog() if s["episode"] == best["episode"])
+        if not contracts_compatible(requested, skill.get("contract") or task_contract(skill["description"])):
+            raise ValueError(f"The closest saved take ('{skill['description']}') doesn't match that request.")
+        if not skill["approved"]:
+            skill["approved"] = True  # the operator asked for this task to run
+            (STORE / f'skill-{skill["episode"]}.json').write_text(json.dumps(skill))
+        policy = run_analytics.recommend(skill["id"], skill["sha256"])
+        if policy["hold"]:
+            raise ValueError(policy["reason"])
+        program = MotionProgram(skill["frames"], policy["speed"])
+        with self.lock:
+            if self.active:
+                raise ValueError("A prompt job is already active")
+            self.plan = {"id": uuid.uuid4().hex, "at": time.time(), "prompt": prompt, "direct": True,
+                         "skill_id": skill["id"], "sha256": skill["sha256"], "description": skill["description"],
+                         "duration": round(program.duration, 2), "start_pose": skill["start_pose"],
+                         "reason": "Closest saved take by EmbeddingGemma similarity; run directly at the operator's request.",
+                         "retrieval": {"skill_id": skill["id"], "score": best["score"], "video_sha256": best.get("video_sha256")},
+                         "speed": policy["speed"], "policy": {k: policy[k] for k in ("policy", "reason", "success_rate")}}
+            self.active = True
+            self.cancel.clear()
+            self.run = {"id": uuid.uuid4().hex, "state": "queued", "events": [], "local_calls": 0, "codex_calls": 0,
+                        "mode": "physical", "result": None, "kind": "execution", "request_id": None, "plan_id": self.plan["id"]}
+            threading.Thread(target=self._job, args=(self._execute, {"plan_id": self.plan["id"]}), daemon=True).start()
+            return {"ok": True, "run_id": self.run["id"], "episode": skill["episode"], "score": best["score"],
+                    "description": skill["description"], "duration": self.plan["duration"]}
 
     def _job(self, function, payload):
         try:
@@ -649,26 +703,27 @@ class TaskHarness:
                          "initial_state": self.recorder.motor_telemetry()})
         self.recorder.autonomy_preflight()
         before = self._snapshot("before")
-        self.event("checking_scene")
-        schema = {"type": "object", "properties": {"match": {"type": "boolean"}, "confidence": {"type": "number"}, "evidence": {"type": "string"}}, "required": ["match", "confidence", "evidence"]}
-        scene = self._call("First image: taught skill starting scene. Second: live starting scene. "
-                           "Check same object, color, position, destination, camera pose, and clear arm path. "
-                           "Occluded targets, changed positions, people or ambiguity mean match=false. "
-                           "Report only directly visible evidence. Task: " + skill["description"], schema,
-                           [base64.b64decode(skill["reference"]), before])
-        if scene.get("match") is not True or isinstance(scene.get("confidence"), bool) or not isinstance(scene.get("confidence"), (int, float)) or not .9 <= scene["confidence"] <= 1:
-            raise RuntimeError("Scene check did not confidently match: " + str(scene.get("evidence")))
-        # A model call can take seconds. Reject a scene that changed while waiting.
-        import cv2
-        import numpy as np
-        def thumbnail(image):
-            decoded = cv2.imdecode(np.frombuffer(image, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
-            if decoded is None:
-                raise RuntimeError("Invalid camera evidence")
-            return cv2.GaussianBlur(cv2.resize(decoded, (64, 48)), (5, 5), 0).astype(float)
-        latest = self._snapshot("pre-motion")
-        if np.abs(thumbnail(before)-thumbnail(latest)).mean() > 8:
-            raise RuntimeError("Scene changed during planning; inspect the workcell and submit again")
+        if not plan.get("direct"):
+            self.event("checking_scene")
+            schema = {"type": "object", "properties": {"match": {"type": "boolean"}, "confidence": {"type": "number"}, "evidence": {"type": "string"}}, "required": ["match", "confidence", "evidence"]}
+            scene = self._call("First image: taught skill starting scene. Second: live starting scene. "
+                               "Check same object, color, position, destination, camera pose, and clear arm path. "
+                               "Occluded targets, changed positions, people or ambiguity mean match=false. "
+                               "Report only directly visible evidence. Task: " + skill["description"], schema,
+                               [base64.b64decode(skill["reference"]), before])
+            if scene.get("match") is not True or isinstance(scene.get("confidence"), bool) or not isinstance(scene.get("confidence"), (int, float)) or not .9 <= scene["confidence"] <= 1:
+                raise RuntimeError("Scene check did not confidently match: " + str(scene.get("evidence")))
+            # A model call can take seconds. Reject a scene that changed while waiting.
+            import cv2
+            import numpy as np
+            def thumbnail(image):
+                decoded = cv2.imdecode(np.frombuffer(image, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+                if decoded is None:
+                    raise RuntimeError("Invalid camera evidence")
+                return cv2.GaussianBlur(cv2.resize(decoded, (64, 48)), (5, 5), 0).astype(float)
+            latest = self._snapshot("pre-motion")
+            if np.abs(thumbnail(before)-thumbnail(latest)).mean() > 8:
+                raise RuntimeError("Scene changed during planning; inspect the workcell and submit again")
         speed = plan.get("speed", MAX_SPEED)
         duration = MotionProgram(skill["frames"], speed).duration
         self.event("executing", skill_id=skill["id"], duration_s=round(duration, 2), speed=speed)
@@ -697,10 +752,17 @@ class TaskHarness:
         goal = contract["destination"]
         criterion = ("The final image must clearly show the requested block inside the bin, released from the gripper." if goal == "bin" else
                      "The final image must clearly show the requested block resting on the table, released from the gripper. At least one intermediate image must show it held and lifted; a block already on the table does not prove pick-and-place.")
-        result = self._call("Evaluate actual physical task completion, not arm pose or a changed image. "
-                            "Images are chronological: before, sparse intermediate views during execution, and after. " + criterion +
-                            " If the goal, lift, or gripper release cannot be seen, verdict=uncertain. "
-                            "Never infer success just because the program finished. Give concrete visual evidence. Task: " + plan["prompt"], schema, [before, *intermediate, after])
+        def verify():
+            return self._call("Evaluate actual physical task completion, not arm pose or a changed image. "
+                                "Images are chronological: before, sparse intermediate views during execution, and after. " + criterion +
+                                " If the goal, lift, or gripper release cannot be seen, verdict=uncertain. "
+                                "Never infer success just because the program finished. Give concrete visual evidence. Task: " + plan["prompt"], schema, [before, *intermediate, after])
+        try:
+            result = verify()
+        except Exception as error:
+            if not plan.get("direct"):
+                raise
+            result = {"verdict": "uncertain", "confidence": 0, "evidence": f"Camera verification unavailable: {error}"}
         verdict = outcome(result)
         motion = self.recorder.autonomy_status()
         if self.recorder.estop or motion.get("error") or not motion.get("complete"):

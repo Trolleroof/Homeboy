@@ -517,6 +517,43 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.harness.run["result"], "success")
         self.assertIsNotNone(self.harness.run.get("max_tracking"))
 
+    def test_do_runs_closest_take_without_plan_approval_codex_or_scene_check(self):
+        self.add_skill()
+        self.harness.plan = None
+        skill = self.harness.catalog()[0]
+        skill["approved"] = False
+        (Path(self.tmp.name)/"skill-2.json").write_text(json.dumps(skill))
+        self.loop_start()
+        candidate = {"episode": 2, "description": skill["description"], "score": .8, "video_sha256": None}
+        with patch.object(self.harness.memory, "find_recordings", return_value=[candidate]), \
+                patch.object(task_harness, "run_codex") as codex, \
+                patch.object(task_harness, "local_model", side_effect=RuntimeError("vision offline")) as vision, \
+                patch.object(self.harness.memory, "learn", return_value={"skill_id": "episode-2"}), \
+                patch.object(self.recorder, "start_autonomy", wraps=self.recorder.start_autonomy) as start:
+            result = self.harness.command("do", {"prompt": "put the orange block in the bin"})
+            self.wait_job()
+        self.assertEqual(result["episode"], 2)
+        codex.assert_not_called()
+        start.assert_called_once()
+        self.assertTrue(self.harness.catalog()[0]["approved"])
+        self.assertEqual(self.harness.run["result"], "uncertain")  # verification is best-effort
+
+    def test_do_refuses_unrelated_or_mismatched_requests_without_moving(self):
+        self.add_skill()
+        self.harness.plan = None
+        candidate = {"episode": 2, "description": "Pick and place the orange block in the bin", "score": .9}
+        with patch.object(self.harness.memory, "find_recordings", return_value=[candidate]):
+            for prompt in ("wash the dishes with soap", "put the blue block in the bin", "put the orange block on the table"):
+                with self.assertRaises(ValueError):
+                    self.harness.command("do", {"prompt": prompt})
+        self.assertFalse(self.harness.active)
+
+    def test_do_refuses_a_weak_match_without_moving(self):
+        with patch.object(self.harness.memory, "find_recordings", return_value=[{"episode": 2, "description": "x", "score": .3}]):
+            with self.assertRaisesRegex(ValueError, "similar enough"):
+                self.harness.command("do", {"prompt": "wash a mug"})
+        self.assertFalse(self.harness.active)
+
     def test_demo_missing_or_wrong_joint_order_is_not_faked(self):
         info = {"features": {"observation.state": {"names": list(JOINTS)}}}
         rows = [{"timestamp": 0., "action": [0.]*6, "observation.state": [.2]*6},

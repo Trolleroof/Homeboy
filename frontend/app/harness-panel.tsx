@@ -72,19 +72,11 @@ export default function HarnessPanel() {
     } catch (reason) { setError((reason as Error).message); return null; }
     finally { setBusy(false); }
   }
-  async function planOrFind() {
-    if (status?.skills.some(skill => skill.approved)) {
-      setConfirmedPlanId("");
-      await command("plan", { prompt });
-      return;
-    }
-    const found = await command("find_episode", { query: prompt });
-    if (found && Number.isInteger(found.episode)) {
-      setEpisode(found.episode);
-      setDescription(found.description);
-      setReviewed(false);
-      setNotice(`Found episode ${found.episode} for your task (${Number(found.score).toFixed(2)} similarity). Review the saved motion below and approve it before planning.`);
-    }
+  const [setupOpen, setSetupOpen] = useState(false);
+  async function runTask() {
+    setConfirmedPlanId("");
+    const started = await command("do", { prompt });
+    if (started) setNotice(`Running episode ${started.episode} (${Number(started.score).toFixed(2)} similarity, ~${Math.ceil(started.duration)}s). Hold the arm; STOP cuts it.`);
   }
   const active = busy || status?.active;
   const currentSkill = status?.skills.find(s => s.episode === episode);
@@ -109,10 +101,10 @@ export default function HarnessPanel() {
       } catch (reason) { setError((reason as Error).message); }
       finally { setBusy(false); void refresh(); }
     }}>Connect</button></div>}
-    <form onSubmit={event => { event.preventDefault(); void planOrFind(); }}>
+    <form onSubmit={event => { event.preventDefault(); void runTask(); }}>
       <label className="field-label" htmlFor="robot-prompt">What should it do?</label>
       <textarea id="robot-prompt" rows={2} maxLength={500} placeholder="Orange block into the bin" value={prompt} onChange={event => setPrompt(event.target.value)} disabled={!!active} />
-      <div className="harness-actions"><span>{!status ? "" : !status.model_ready ? "Planner off" : status.skills.some(s => s.approved) ? "Ready" : status.skills.some(s => !s.approved) ? "Review the found take below" : status.memory.demonstrations ? "Find a matching take" : "Teach one first"}</span><button className="primary-button" disabled={!!active || !prompt.trim() || !status?.model_ready || (!status.skills.some(s => s.approved) && (!status.memory.demonstrations || status.skills.some(s => !s.approved)))}>{status?.skills.some(s => s.approved) ? "Plan" : status?.skills.some(s => !s.approved) ? "Review take" : "Find take"}</button></div>
+      <div className="harness-actions"><span>{!status ? "" : !motorsFresh ? "Connect the arm" : "Finds the closest saved take and runs it"}</span><button className="primary-button" disabled={!!active || !prompt.trim() || !motorsFresh || !status?.memory.demonstrations}>Run it</button></div>
     </form>
     {status?.memory && <p className="harness-memory">{status.memory.demonstrations} demos · {status.memory.experiences} worked</p>}
     {status?.plan && <div className="harness-plan">
@@ -135,7 +127,7 @@ export default function HarnessPanel() {
     </div>}
     {error && <p className="harness-alert" role="alert">{error}</p>}
     {notice && <p className="harness-notice" role="status">{notice}</p>}
-    <details className="harness-setup"><summary>Add a demo</summary><p>Find a saved take from your task, review it, then approve the example for Codex.</p>
+    <details className="harness-setup" open={setupOpen} onToggle={event => setSetupOpen(event.currentTarget.open)}><summary>Add a demo</summary><p>Find a saved take from your task, review it, then approve the example for Codex.</p>
       <div className="harness-inputs"><label>Episode ID<input type="number" min={0} value={episode} onChange={e => { setEpisode(Number(e.target.value)); setReviewed(false); }} /></label><label>What it did<input value={description} maxLength={200} onChange={e => setDescription(e.target.value)} /></label><button className="quiet-button" disabled={!!active || !prompt.trim()} onClick={async () => { setReviewed(false); const result = await command("find_episode", { query: prompt }); if (result && Number.isInteger(result.episode)) { setEpisode(result.episode); setDescription(result.description); } }}>Find for task</button><button className="quiet-button" disabled={!!active} onClick={() => { setReviewed(false); void command("import", { episode, description }); }}>Import ID</button></div>
       {currentSkill && <div className="harness-plan"><strong>{currentSkill.description}</strong><p>{currentSkill.conversion}. ~{Math.ceil(currentSkill.duration)}s.</p><p>{currentSkill.approved ? "Approved." : "Not yet."}</p>{!currentSkill.approved && <><label className="harness-check"><input type="checkbox" checked={reviewed} onChange={e => setReviewed(e.target.checked)} />I watched it work. I&apos;ll watch the first run.</label><button className="quiet-button" disabled={!!active || !reviewed} onClick={() => void command("approve", { skill_id: currentSkill.id, reviewed })}>Approve</button></>}</div>}
     </details>
