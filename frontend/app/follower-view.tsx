@@ -107,7 +107,8 @@ export default function FollowerView() {
   }, []);
   return <div className="follower-view" aria-label="SO-101 follower digital twin">
     <div className="follower-canvas" ref={host} />
-    <div className="follower-view-caption"><span className={`follower-live-dot ${live ? "live" : ""}`} /><strong>{live ? "Live" : "Paused"}</strong>{modelState && <span>{modelState}</span>}</div>
-    <span className="follower-view-hint">Drag to spin</span>
+    <div className="follower-view-caption"><span className={`follower-live-dot ${live ? "live" : ""}`} /><strong>{live ? "Live" : "Paused"}</strong></div>
+    {modelState && <p className="follower-view-status">{modelState}</p>}
+    <span className="follower-view-hint">Drag to turn</span>
   </div>;
 }

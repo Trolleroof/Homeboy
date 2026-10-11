@@ -64,6 +64,12 @@ class MemoryTests(unittest.TestCase):
             db.execute("UPDATE video_embeddings SET embedding=?", (json.dumps([-1., 0.]),))
         self.assertFalse(self.memory.search(self.skill["description"], [self.skill], self.contract)["safe_match"])
 
+    def test_finds_saved_episode_by_task_before_harness_import(self):
+        found = self.memory.find_recordings("pick up the orange block and put it in the bin")
+        self.assertEqual(found[0]["episode"], 2)
+        self.assertEqual(found[0]["description"], "Orange block in bin")
+        self.assertEqual(found[0]["score"], 1.0)
+
     def test_ambiguous_vector_match_is_rejected(self):
         other = {**self.skill, "id": "episode-3"}
         with self.memory.connect() as db:

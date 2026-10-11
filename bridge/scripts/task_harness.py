@@ -19,7 +19,7 @@ import uuid
 from motion_program import JOINTS, MotionProgram, MAX_SPEED, MAX_COMMAND_STEP
 from codex_robot import available, run_codex, tool
 from keewano_sink import KeewanoSink
-from skill_memory import SkillMemory
+from skill_memory import SkillMemory, contracts_compatible
 import run_analytics
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -66,14 +66,14 @@ def task_contract(text):
     Novel tasks require teaching and extending this verified vocabulary first.
     """
     words = re.findall(r"[a-z]+|\d+", text.lower())
-    allowed = set("please can could would will you robot homeboy the a an my our your it now then and to into in on onto at up down back pick pickup lift grab take get put place set drop move carry transfer block cube orange red blue green yellow black white pink purple brown bin basket container tray table tabletop again do task for me thanks thank".split())
-    if not words or any(word not in allowed for word in words):
+    allowed = set("please can could would will you robot homeboy the a an my our your it now then and to into in on onto at up down back pick pickup lift grab take get put place set drop move carry transfer block cube orange red blue green yellow black white pink purple brown bin basket container tray table tabletop again do task for me thanks thank with gripper hold held for sec secs second seconds after".split())
+    if not words or any(word not in allowed and not word.isdigit() for word in words):
         return None
     tokens = set(words)
     if not tokens.intersection({"block", "cube"}):
         return None
     colors = tokens.intersection({"orange", "red", "blue", "green", "yellow", "black", "white", "pink", "purple", "brown"})
-    if len(colors) != 1:
+    if len(colors) > 1:
         return None
     placing = bool(tokens.intersection({"put", "place", "set", "drop", "move", "carry", "transfer"}))
     bin_goal = bool(tokens.intersection({"bin", "basket", "container", "tray"}))
@@ -87,7 +87,7 @@ def task_contract(text):
         action = "pick_place"
     else:
         return None
-    return {"object": "block", "color": next(iter(colors)), "action": action, "destination": destination}
+    return {"object": "block", "color": next(iter(colors)) if colors else None, "action": action, "destination": destination}
 
 
 def local_model(prompt, schema, images=()):
@@ -174,13 +174,13 @@ class TaskHarness:
         import cv2
         index = payload.get("episode")
         description = payload.get("description", "")
-        if isinstance(index, bool) or not isinstance(index, int) or index < 2:
-            raise ValueError("Choose a real demonstration (episode 2 or later); diagnostics cannot execute")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise ValueError("Choose a non-negative saved episode number")
         if not isinstance(description, str) or not 5 <= len(description.strip()) <= 200:
             raise ValueError("Describe the taught task in 5–200 characters")
         contract = task_contract(description)
         if contract is None:
-            raise ValueError("This version supports a named-color block pick-and-place: place it down/on the table/in the bin. Pick-only holding needs a separate validated controller.")
+            raise ValueError("This version supports a block pick-and-place: place it down/on the table/in the bin. Pick-only holding needs a separate validated controller.")
         with self.lock:
             if self.active:
                 raise ValueError("Wait for the current job before changing skills")
@@ -281,6 +281,19 @@ class TaskHarness:
             return self.insights(payload.get("query", ""))
         if action == "import":
             return self.import_episode(payload)
+        if action == "find_episode":
+            query = payload.get("query")
+            if not isinstance(query, str) or not 1 <= len(query.strip()) <= 500:
+                raise ValueError("Enter the task you want the robot to handle")
+            candidates = self.memory.find_recordings(query.strip())
+            if not candidates:
+                raise ValueError("No saved, indexed recordings were found. Save and index a demonstration first.")
+            candidate = candidates[0]
+            existing = next((skill for skill in self.catalog() if skill["episode"] == candidate["episode"]), None)
+            imported = existing or self.import_episode({"episode": candidate["episode"], "description": candidate["description"]})
+            return {"ok": True, "episode": candidate["episode"], "description": candidate["description"],
+                    "score": candidate["score"], "already_imported": existing is not None, "import": imported,
+                    "review_required": not bool(existing and existing.get("approved"))}
         if action == "approve":
             with self.lock:
                 if self.active:
@@ -444,7 +457,8 @@ class TaskHarness:
         prompt = payload["prompt"]
         self.event("planning", prompt=prompt)
         contract = task_contract(prompt)
-        skills = [s for s in self.catalog() if s["approved"] and contract is not None and s.get("contract", task_contract(s["description"])) == contract]
+        skills = [s for s in self.catalog() if s["approved"] and contract is not None
+                  and contracts_compatible(contract, s.get("contract", task_contract(s["description"])))]
         if not skills:
             self.event("no_match", reason="No approved skill matches this object, color, action and destination. Teach a matching fixed-cell routine first.")
             return

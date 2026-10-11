@@ -18,16 +18,16 @@ The emergency STOP cuts torque without commanding a return pose. After a stop, i
 ## Storage and search
 
 - Leader/follower serial ports: `bridge/config/arms.json`.
-- Camera mapping: `bridge/config/cameras.json`. The `wrist` stream is recorded into episodes; `overhead` is an additional live view that does not change the existing wrist-only episode schema. On this host, index 1 is the close gripper view and index 0 is the wide workspace view. Restart the bridge after changing the mapping.
+- Camera mapping: `bridge/config/cameras.json`. Both `wrist` and `overhead` are recorded as separate LeRobot video features (`observation.images.wrist` and `observation.images.overhead`) and shown as separate saved clips. On this host, index 1 is the close gripper view and index 0 is the wide workspace view. Restart the bridge after changing the mapping. Existing wrist-only datasets are extended in place for future takes; older episodes remain wrist-only.
 - Episodes, joint actions, and H.264 video: `~/.cache/huggingface/lerobot/homeboy/speedhacks-wrist-v1`.
 - Video vectors and optional display metadata: `datasets/homeboy_skills.sqlite3`.
 - Recorder log: `bridge/logs/recorder.log`.
 - Native video embedding service: localhost:8622, auto-started on the first indexing/search request. Its Python environment is separate from LeRobot.
 - Set up that environment from the project root: `uv venv --python 3.12 .embedding-venv`, then `uv pip install --python .embedding-venv/bin/python -r bridge/embedding-requirements.txt`.
 - The first request downloads the pinned `google/embeddinggemma-2` model from Hugging Face; it needs network access and several GB of disk space. Subsequent runs use the local cache. No hosted inference API key is needed.
-- Each saved episode contributes eight evenly spaced wrist-camera frames from its exact clip window. EmbeddingGemma 2 embeds these pixels directly with its native video input. No title or generated caption is included in the video vector. Audio is disabled.
-- Natural-language queries are embedded by the same version of EmbeddingGemma 2, then compared against stored video vectors in SQLite. Results return the linked recording. Descriptions are optional when registering an episode; registration makes no text embedding request. Cards use recording numbers instead of titles.
-- Retrieval uses only native video vectors. Titles, task descriptions, catalog descriptions, and stored prompt embeddings never determine matches. Legacy label vectors remain on disk for compatibility but are not searched. The robot harness uses the same video-only recall rule, with approval and task-contract checks still required.
+- Each saved camera clip contributes eight evenly spaced frames from its exact episode window. EmbeddingGemma 2 embeds wrist and overhead pixels independently with its native video input; audio and titles are excluded. A separate local Gemma 3 vision request creates a short literal caption for each camera, then EmbeddingGemma 2 embeds each caption. Per-camera captions and both vector types are stored in SQLite.
+- Natural-language queries are embedded by EmbeddingGemma 2, then compared against each camera's video and caption vectors. The highest cosine score across those views ranks the episode. Descriptions entered by the operator are metadata and are not embedded for retrieval. Each camera caption appears collapsed under its video.
+- The robot harness uses the same maximum-of-video-and-caption score for retrieval, with approval and task-contract checks still required. Legacy task-label and prompt vectors do not determine matches.
 - The video threshold (0.65) and top-two margin (0.03) are demo heuristics; they need calibration with more clips. Scores indicate similarity, not successful execution or robot safety.
 - This indexes saved recordings from the camera stream. Continuous live-stream sliding-window indexing is not implemented. Eight samples can miss brief actions in long episodes.
 - Verification evidence: `../bridge/VIDEO_RETRIEVAL_VERIFICATION.md`.

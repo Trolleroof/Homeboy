@@ -391,6 +391,21 @@ class HarnessTests(unittest.TestCase):
         self.assertNotEqual(known, task_contract("Place the orange block in the bin"))
         self.assertNotEqual(known, task_contract("Pick up the blue block and put it down"))
 
+    def test_plain_block_hold_then_drop_task_matches_saved_description(self):
+        requested = task_contract("pick up the block with the gripper, hold it for 3 seconds, and then drop it down")
+        taught = task_contract("pick up the block with the gripper, hold it for 3 seconds, and then drop it down")
+        self.assertEqual(requested, taught)
+        self.assertIsNone(requested["color"])
+
+    def test_find_episode_uses_top_saved_video_match_and_imports_for_review(self):
+        candidate = {"episode": 1, "description": "pick up green block and put it down", "score": .82}
+        with patch.object(self.harness.memory, "find_recordings", return_value=[candidate]), \
+             patch.object(self.harness, "import_episode", return_value={"ok": True, "id": "episode-1"}) as importer:
+            result = self.harness.command("find_episode", {"query": "pick up the block and put it down"})
+        importer.assert_called_once_with({"episode": 1, "description": candidate["description"]})
+        self.assertEqual(result["episode"], 1)
+        self.assertTrue(result["review_required"])
+
     def test_hallucinated_skill_cannot_override_contract(self):
         self.add_skill()
         with patch.object(task_harness, "run_codex") as model:

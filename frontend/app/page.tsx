@@ -30,6 +30,16 @@ type RecorderStatus = {
   motors?: { positions?: Record<string, number>; age_s?: number | null };
 };
 
+type CameraView = {
+  camera: string;
+  video_path?: string;
+  video_from?: number;
+  video_to?: number;
+  video_url?: string;
+  caption?: string | null;
+  sampled_frames?: number;
+};
+
 type Skill = {
   repo_id: string;
   episode_index: number;
@@ -38,6 +48,8 @@ type Skill = {
   video_url: string;
   match_source?: string;
   sampled_frames?: number;
+  caption?: string;
+  camera_views?: CameraView[];
 };
 
 type SavedSkill = {
@@ -50,6 +62,8 @@ type SavedSkill = {
   created_at: string;
   video_indexed?: boolean | number;
   video_model?: string;
+  caption?: string;
+  camera_views?: CameraView[];
 };
 
 const EMPTY: RecorderStatus = {
@@ -65,6 +79,8 @@ export default function Home() {
   const [searchMessage, setSearchMessage] = useState("");
   const [searchRunId, setSearchRunId] = useState("");
   const [indexing, setIndexing] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState("");
   const [library, setLibrary] = useState<SavedSkill[]>([]);
   const [busy, setBusy] = useState(false);
   const [calibrationOpen, setCalibrationOpen] = useState(false);
@@ -103,6 +119,30 @@ export default function Home() {
     } catch (reason) { setError((reason as Error).message); }
     finally { setIndexing(""); }
   }, [refreshLibrary]);
+
+  const deleteTake = useCallback(async (repoId: string, episodeIndex: number) => {
+    const key = `${repoId}:${episodeIndex}`;
+    if (pendingDelete !== key) {
+      setPendingDelete(key);
+      setError("");
+      return;
+    }
+    setDeleting(key);
+    setError("");
+    try {
+      const response = await fetch("/api/bridge/skills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", repo_id: repoId, episode_index: episodeIndex }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Could not delete that take.");
+      setPendingDelete(null);
+      setResults((current) => current.filter((skill) => !(skill.repo_id === repoId && skill.episode_index === episodeIndex)));
+      await refreshLibrary();
+    } catch (reason) { setError((reason as Error).message); }
+    finally { setDeleting(""); }
+  }, [pendingDelete, refreshLibrary]);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -380,8 +420,11 @@ export default function Home() {
         </header>
 
         <div className="content">
-          <section className="intro">
-            <div className="intro-copy"><h1>Teach it once.</h1></div>
+          <section className="intro" aria-label="Teach it once">
+            <div className="intro-copy">
+              <h1>Teach it once.</h1>
+              <p>Move the leader through the chore. This arm follows.</p>
+            </div>
             <div className="intro-art"><FollowerView /></div>
           </section>
 
@@ -433,9 +476,9 @@ export default function Home() {
             <div className="section-heading"><div><h2>Saved</h2></div><span className="episode-count">{library.length}</span></div>
             <form className="search-form" onSubmit={(event) => void searchSkills(event)}><span className="search-glyph">⌕</span><input aria-label="Search saved demonstrations" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="orange cube" /><button type="submit" disabled={busy || !query.trim()}>{busy ? "Searching…" : "Search"}<span>→</span></button></form>
             {searchRunId && <div className="search-foot"><a href={`/api/events?run_id=${encodeURIComponent(searchRunId)}`} target="_blank" rel="noreferrer">Trace</a></div>}
-            {results.length > 0 && <div className="results-grid">{results.map((skill) => <article className="result-card" key={`${skill.repo_id}-${skill.episode_index}`}><div className="result-title"><span className="result-icon">↗</span><div><strong>{`Take ${skill.episode_index + 1}`}</strong><small>{skill.repo_id}</small></div><span className="match-score">{skill.score.toFixed(2)}<small>MATCH</small></span></div><video controls preload="metadata" src={skill.video_url} /><div className="result-foot"><span>{`${skill.sampled_frames} frames`}</span><span>{String(skill.episode_index + 1).padStart(2, "0")}</span></div></article>)}</div>}
+            {results.length > 0 && <div className="results-grid">{results.map((skill) => <article className="result-card" key={`${skill.repo_id}-${skill.episode_index}`}><div className="result-title"><span className="result-icon">↗</span><div><strong>{`Take ${skill.episode_index + 1}`}</strong><small>{skill.repo_id}</small></div><span className="match-score">{skill.score.toFixed(2)}<small>MATCH</small></span></div>{(skill.camera_views?.length ? skill.camera_views : [{ camera: "observation.images.wrist", video_url: skill.video_url, caption: skill.caption, sampled_frames: skill.sampled_frames }]).map((view) => <div className="saved-camera" key={view.camera}><strong className="saved-camera-label">{cameraName(view.camera)}</strong><video controls preload="metadata" src={view.video_url ?? skill.video_url} /><details className="video-caption"><summary>Caption</summary><p>{view.caption || "No caption saved yet."}</p></details></div>)}<div className="result-foot"><span>{`${skill.sampled_frames ?? ""} sampled frames`}</span><span>{String(skill.episode_index + 1).padStart(2, "0")}</span></div></article>)}</div>}
             {searchMode && results.length === 0 && <div className="empty-results"><span>⌕</span><strong>Nothing close.</strong><p>{searchMessage || "Teach one first."}</p></div>}
-            {!searchMode && library.length > 0 && <div className="results-grid">{library.map((skill) => <article className="result-card" key={`${skill.repo_id}-${skill.episode_index}`}><div className="result-title"><span className="result-icon">↗</span><div><strong>{`Take ${skill.episode_index + 1}`}</strong><small>{skill.repo_id}</small></div><span className="library-tag">{skill.video_indexed ? "SEARCHABLE" : "SAVED"}</span></div><video controls preload="metadata" src={`/api/bridge/video?repo_id=${encodeURIComponent(skill.repo_id)}&path=${encodeURIComponent(skill.video_path)}#t=${skill.video_from}`} /><div className="result-foot"><span>{skill.video_indexed ? "Searchable" : "Not searchable yet"}</span><button className="quiet-button" disabled={Boolean(indexing)} onClick={() => void indexVideo(skill.repo_id, skill.episode_index)}>{indexing === `${skill.repo_id}:${skill.episode_index}` ? "Indexing…" : skill.video_indexed ? "Index again" : "Index"}</button></div></article>)}</div>}
+            {!searchMode && library.length > 0 && <div className="results-grid">{library.map((skill) => <article className="result-card" key={`${skill.repo_id}-${skill.episode_index}`}><div className="result-title"><span className="result-icon">↗</span><div><strong>{`Take ${skill.episode_index + 1}`}</strong><small>{skill.repo_id}</small></div><span className="library-tag">{skill.video_indexed ? "SEARCHABLE" : "SAVED"}</span></div>{(skill.camera_views?.length ? skill.camera_views : [{ camera: "observation.images.wrist", video_path: skill.video_path, video_from: skill.video_from, caption: skill.caption }]).map((view) => <div className="saved-camera" key={view.camera}><strong className="saved-camera-label">{cameraName(view.camera)}</strong><video controls preload="metadata" src={view.video_url ?? `/api/bridge/video?repo_id=${encodeURIComponent(skill.repo_id)}&path=${encodeURIComponent(view.video_path ?? skill.video_path)}#t=${view.video_from ?? skill.video_from}`} /><details className="video-caption"><summary>Caption</summary><p>{view.caption || "No caption saved yet."}</p></details></div>)}<div className="result-foot"><span>{skill.video_indexed ? "Searchable" : "Not searchable yet"}</span><div className="result-actions"><button className="quiet-button" disabled={Boolean(indexing) || deleting === `${skill.repo_id}:${skill.episode_index}`} onClick={() => { setPendingDelete(null); void indexVideo(skill.repo_id, skill.episode_index); }}>{indexing === `${skill.repo_id}:${skill.episode_index}` ? "Indexing…" : skill.video_indexed ? "Index again" : "Index"}</button><button className={`quiet-button delete-take${pendingDelete === `${skill.repo_id}:${skill.episode_index}` ? " armed" : ""}`} disabled={Boolean(indexing) || Boolean(deleting)} onClick={() => void deleteTake(skill.repo_id, skill.episode_index)}>{deleting === `${skill.repo_id}:${skill.episode_index}` ? "Deleting…" : pendingDelete === `${skill.repo_id}:${skill.episode_index}` ? "Delete this take?" : "Delete"}</button></div></div></article>)}</div>}
             {!searchMode && library.length === 0 && <div className="library-empty"><span className="empty-stack">▤</span><p>Nothing here yet.</p></div>}
           </section>
           <footer className="page-foot"><span>HOMEBOY</span><span>STAYS ON THIS COMPUTER</span></footer>
@@ -447,6 +490,10 @@ export default function Home() {
 
 function CameraMark() {
   return <svg viewBox="0 0 48 38" aria-hidden="true" fill="none"><path d="M5 11.5h7l3-4h13l3 4h12a2 2 0 0 1 2 2v17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-17a2 2 0 0 1 2-2Z" stroke="currentColor" strokeWidth="1.5"/><circle cx="24" cy="21.5" r="7" stroke="currentColor" strokeWidth="1.5"/><circle cx="24" cy="21.5" r="2.5" fill="currentColor"/></svg>;
+}
+
+function cameraName(key: string) {
+  return key.split(".").at(-1)?.toUpperCase() ?? key;
 }
 
 function MjpegStream({ src, alt }: { src: string; alt: string }) {

@@ -14,6 +14,8 @@ export type NativeEmbedding = {
   frame_times?: number[];
   sample_sha256?: string;
   elapsed_s: number;
+  caption?: string;
+  caption_model?: string;
 };
 
 async function available(): Promise<boolean> {
@@ -57,7 +59,7 @@ async function ensureService(): Promise<void> {
   await shared.homeboyEmbeddingStartup;
 }
 
-export async function nativeEmbedding(kind: "text" | "video", input: Record<string, unknown>): Promise<NativeEmbedding> {
+export async function nativeEmbedding(kind: "text" | "video" | "caption", input: Record<string, unknown>): Promise<NativeEmbedding> {
   await ensureService();
   const response = await fetch(`${base}/embed/${kind}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),

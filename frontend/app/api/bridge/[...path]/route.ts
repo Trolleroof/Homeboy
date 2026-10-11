@@ -46,7 +46,7 @@ async function handle(request: Request, context: Context) {
       if (post && action === "stop") return NextResponse.json(await stop());
     }
     let endpoint = "";
-    if (group === "harness" && ((!post && ["status", "evidence"].includes(action)) || (post && ["plan", "run", "import", "approve", "stop"].includes(action)))) endpoint = `harness/${action}${post ? "" : new URL(request.url).search}`;
+    if (group === "harness" && ((!post && ["status", "evidence"].includes(action)) || (post && ["plan", "run", "import", "find_episode", "approve", "stop"].includes(action)))) endpoint = `harness/${action}${post ? "" : new URL(request.url).search}`;
     const stream = group === "stream" && config().cameras.some(c => c.name === action) && !post;
     if (stream) endpoint = `${new URL(request.url).searchParams.get("mode") === "snapshot" ? "snapshot" : "stream"}?camera=${encodeURIComponent(action)}`;
     if (group === "recorder" && actions.has(action) && (post ? action !== "status" : action === "status")) endpoint = action;

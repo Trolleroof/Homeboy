@@ -1,5 +1,6 @@
 """Native EmbeddingGemma 2 text/video embeddings; never controls robot hardware."""
 import hashlib
+import base64
 import logging
 import math
 import os
@@ -48,6 +49,10 @@ class VideoInput(BaseModel):
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     max_frames: int = Field(default=8, ge=2, le=16)
+
+
+class CaptionInput(VideoInput):
+    max_frames: int = Field(default=4, ge=2, le=8)
 
 
 @app.get("/health")
@@ -112,6 +117,50 @@ def embed_video(body: VideoInput):
     except Exception as error:
         logging.exception("Native video embedding failed")
         raise HTTPException(503, f"Video embedding failed: {error}") from error
+
+
+@app.post("/embed/caption")
+def caption_video(body: CaptionInput):
+    """Generate a concise visual caption locally, then embed it with EmbeddingGemma 2."""
+    import json
+    import urllib.request
+    root = (DATASET_ROOT / body.repo_id).resolve()
+    video = (root / body.video_path).resolve()
+    if not root.is_relative_to(DATASET_ROOT) or root == DATASET_ROOT or not video.is_relative_to(root):
+        raise HTTPException(400, "Video path must be inside its dataset")
+    if not video.is_file():
+        raise HTTPException(404, "Recorded video not found")
+    duration = body.end - body.start
+    if not math.isfinite(duration) or duration <= 0 or duration > 300:
+        raise HTTPException(400, "Clip must span 0–300 seconds")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(503, "ffmpeg is required to decode recorded frames")
+    timestamps = [body.start + duration * i / body.max_frames for i in range(body.max_frames)]
+    try:
+        with lock, tempfile.TemporaryDirectory(prefix="homeboy-caption-") as tmp:
+            images = []
+            for index, timestamp in enumerate(timestamps):
+                filename = Path(tmp) / f"{index:02}.jpg"
+                subprocess.run([ffmpeg, "-v", "error", "-y", "-ss", str(timestamp), "-i", str(video),
+                                "-frames:v", "1", "-vf", "scale=480:-2", str(filename)],
+                               check=True, timeout=20, capture_output=True)
+                images.append(base64.b64encode(filename.read_bytes()).decode())
+            request = urllib.request.Request("http://127.0.0.1:11434/api/chat", data=json.dumps({
+                "model": os.environ.get("HOMEBOY_MODEL", "gemma3:4b"), "stream": False,
+                "messages": [{"role": "user", "content": "Write one concise, literal caption describing the visible objects and actions across these frames. Do not infer intent or claim task success. Return only the caption.", "images": images}],
+                "options": {"temperature": 0, "num_predict": 96},
+            }).encode(), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=90) as response:
+                generated = json.load(response)["message"]["content"].strip()
+            if not generated:
+                raise ValueError("Vision model returned an empty caption")
+            vector = load_model().encode_query(generated, normalize_embeddings=True)
+            return {"caption": generated[:800], "embedding": vector.tolist(), "model": MODEL_ID,
+                    "revision": REVISION, "caption_model": os.environ.get("HOMEBOY_MODEL", "gemma3:4b")}
+    except Exception as error:
+        logging.exception("Video caption generation failed")
+        raise HTTPException(503, f"Video captioning failed: {error}") from error
 
 
 if __name__ == "__main__":

@@ -48,9 +48,11 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
 import socket
 import struct
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -232,6 +234,44 @@ def recorder_data_issues(
     if missing:
         issues.append(f"no fresh frames from {', '.join(sorted(missing))}")
     return issues
+
+
+def extend_video_camera_schema(dataset_root: Path, configured_features: dict[str, dict]) -> list[str]:
+    """Add newly configured video cameras to an existing dataset without rewriting old takes.
+
+    LeRobot stores one video feature per camera. Older episode rows simply have
+    no path for a camera added later, so they remain wrist-only while new rows
+    get their own synchronized video stream.
+    """
+    info_path = dataset_root / "meta" / "info.json"
+    if not info_path.is_file():
+        return []
+    info = json.loads(info_path.read_text())
+    current = info.get("features", {})
+    missing = {
+        key: feature for key, feature in configured_features.items()
+        if key.startswith(f"{OBS_STR}.images.") and feature.get("dtype") == "video" and key not in current
+    }
+    if not missing:
+        return []
+    if int(info.get("fps", 0)) <= 0:
+        raise RuntimeError(f"Cannot safely extend camera schema: invalid FPS in {info_path}")
+    for key, feature in missing.items():
+        if not isinstance(feature.get("shape"), (tuple, list)) or len(feature["shape"]) != 3:
+            raise RuntimeError(f"Cannot safely extend camera schema: invalid feature shape for {key}")
+        current[key] = feature
+    info["features"] = current
+    temp_name = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=info_path.parent, delete=False) as temp:
+            json.dump(info, temp, indent=4)
+            temp.write("\n")
+            temp_name = temp.name
+        os.replace(temp_name, info_path)
+    finally:
+        if temp_name and os.path.exists(temp_name):
+            os.unlink(temp_name)
+    return sorted(missing)
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
@@ -910,9 +950,8 @@ class Recorder:
                 name: name in self._last_camera_frames and self._camera_misses.get(name, 0) == 0
                 for name in self.camera_meta
             }
-            # Live-only cameras (such as overhead) may be added without changing
-            # an existing wrist-only episode schema. Require every dataset view
-            # to be configured and fresh, while allowing extra streams for UI.
+            # Every schema camera is a required recording input; refuse readiness
+            # if either synchronized view is missing or stale.
             dataset_camera_meta = {name: index for name, index in self.camera_meta.items() if name in dataset_cameras}
             dataset_camera_streaming = {name: camera_streaming.get(name, False) for name in dataset_camera_meta}
             issues = recorder_data_issues(
@@ -2135,20 +2174,26 @@ def main() -> int:
 
         from lerobot.utils.constants import HF_LEROBOT_HOME
 
-        if (HF_LEROBOT_HOME / args.repo_id).exists():
+        dataset_root = HF_LEROBOT_HOME / args.repo_id
+        added_camera_features = extend_video_camera_schema(dataset_root, features)
+        if added_camera_features:
+            log.info("extended existing dataset camera schema with %s; older episodes keep their original camera views",
+                     ", ".join(added_camera_features))
+
+        if dataset_root.exists():
             # `root` is required: without it resume() would build a writer over the
             # revision-safe Hub snapshot cache, which it refuses to do. Same reason
             # as in reopen() -- and we always want the local directory anyway.
             dataset = LeRobotDataset.resume(
                 repo_id=args.repo_id,
-                root=HF_LEROBOT_HOME / args.repo_id,
+                root=dataset_root,
                 rgb_encoder=RGBEncoderConfig(vcodec="h264"),
                 streaming_encoding=True,
             )
             dataset.meta._metadata_buffer_size = 1
             log.info("resuming %s at %d episodes", args.repo_id, dataset.meta.total_episodes)
-            # Saved schemas stay fixed; safe_build_dataset_frame includes only
-            # their feature keys. Extra cameras may stream without changing them.
+            # Newly configured cameras were added to the video schema above;
+            # the existing episode rows retain only the cameras they contain.
             existing = {key.split(".")[-1] for key in dataset.meta.features if key.startswith(f"{OBS_STR}.images.")}
             if not existing.issubset(camera_meta):
                 parser.error(
@@ -2161,7 +2206,7 @@ def main() -> int:
                 fps=args.fps,
                 features=features,
                 robot_type=getattr(robot, "name", "so101_follower"),
-                root=HF_LEROBOT_HOME / args.repo_id,
+                root=dataset_root,
                 use_videos=True,
                 metadata_buffer_size=1,
                 streaming_encoding=True,

@@ -20,6 +20,8 @@ Pinned revision: `914f7f89142e33e77833254d9c9b90c3cef7303b`
 6. SQLite stores the normalized 768-dimensional vector, model revision, sampled timestamps, sample hash, and episode identity in `video_embeddings`. Older text vectors stay in a separate table.
 7. A natural-language query is encoded by the same pinned model using `encode_query`, compared with the stored video vectors, and returns the linked recording when the demo threshold passes.
 
+Current indexing also asks the configured local Ollama vision model (default `gemma3:4b`) for a literal caption of four sampled frames. EmbeddingGemma 2 embeds that caption separately. SQLite stores the caption text, caption embedding, EmbeddingGemma revision, and caption model in `caption_embeddings`. Search and harness retrieval score both vectors and rank each clip by the larger cosine similarity. The caption is shown in a collapsed **Caption** row below each saved or matched video. A captioning failure leaves the already-saved recording and video vector intact; indexing can be retried.
+
 No paid inference API is used. Hugging Face is needed for the initial model download. Model inference runs locally on MPS on this Mac. The environment is separate from the robot's LeRobot environment.
 
 ## Observed results

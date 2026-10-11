@@ -17,12 +17,13 @@ type DialStatus = { configured: boolean; number: string; context: { connected: b
 export default function HarnessPanel() {
   const [status, setStatus] = useState<Harness | null>(null);
   const [prompt, setPrompt] = useState("");
-  const [episode, setEpisode] = useState(2);
+  const [episode, setEpisode] = useState(1);
   const [description, setDescription] = useState("Pick up the orange block and place it down");
   const [reviewed, setReviewed] = useState(false);
   const [confirmedPlanId, setConfirmedPlanId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [offline, setOffline] = useState(false);
   const [connectionError, setConnectionError] = useState("");
   const [dial, setDial] = useState<DialStatus | null>(null);
@@ -61,14 +62,29 @@ export default function HarnessPanel() {
     return () => { cancelled = true; };
   }, []);
   async function command(action: string, body: Record<string, unknown>) {
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setNotice("");
     try {
       const response = await fetch(`/api/bridge/harness/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error ?? "That didn't work");
       await refresh();
-    } catch (reason) { setError((reason as Error).message); }
+      return result;
+    } catch (reason) { setError((reason as Error).message); return null; }
     finally { setBusy(false); }
+  }
+  async function planOrFind() {
+    if (status?.skills.some(skill => skill.approved)) {
+      setConfirmedPlanId("");
+      await command("plan", { prompt });
+      return;
+    }
+    const found = await command("find_episode", { query: prompt });
+    if (found && Number.isInteger(found.episode)) {
+      setEpisode(found.episode);
+      setDescription(found.description);
+      setReviewed(false);
+      setNotice(`Found episode ${found.episode} for your task (${Number(found.score).toFixed(2)} similarity). Review the saved motion below and approve it before planning.`);
+    }
   }
   const active = busy || status?.active;
   const currentSkill = status?.skills.find(s => s.episode === episode);
@@ -95,10 +111,10 @@ export default function HarnessPanel() {
       } catch (reason) { setError((reason as Error).message); }
       finally { setBusy(false); void refresh(); }
     }}>Connect</button></div>}
-    <form onSubmit={event => { event.preventDefault(); setConfirmedPlanId(""); void command("plan", { prompt }); }}>
+    <form onSubmit={event => { event.preventDefault(); void planOrFind(); }}>
       <label className="field-label" htmlFor="robot-prompt">What should it do?</label>
       <textarea id="robot-prompt" rows={2} maxLength={500} placeholder="Orange block into the bin" value={prompt} onChange={event => setPrompt(event.target.value)} disabled={!!active} />
-      <div className="harness-actions"><span>{!status ? "" : !status.model_ready ? "Planner off" : status.skills.some(s => s.approved) ? "Ready" : "Teach one first"}</span><button className="primary-button" disabled={!!active || !prompt.trim() || !status?.model_ready || !status.skills.some(s => s.approved)}>Plan</button></div>
+      <div className="harness-actions"><span>{!status ? "" : !status.model_ready ? "Planner off" : status.skills.some(s => s.approved) ? "Ready" : status.skills.some(s => !s.approved) ? "Review the found take below" : status.memory.demonstrations ? "Find a matching take" : "Teach one first"}</span><button className="primary-button" disabled={!!active || !prompt.trim() || !status?.model_ready || (!status.skills.some(s => s.approved) && (!status.memory.demonstrations || status.skills.some(s => !s.approved)))}>{status?.skills.some(s => s.approved) ? "Plan" : status?.skills.some(s => !s.approved) ? "Review take" : "Find take"}</button></div>
     </form>
     {status?.memory && <p className="harness-memory">{status.memory.demonstrations} demos · {status.memory.experiences} worked</p>}
     {status?.plan && <div className="harness-plan">
@@ -120,8 +136,9 @@ export default function HarnessPanel() {
       <details><summary>Details</summary><ol>{status.run.events.map((event, i) => <li key={i}>{event.event.replaceAll("_", " ")}{event.tool ? ` · ${event.tool}` : ""}{event.error ? `: ${event.error}` : ""}{event.reply && <p>{event.reply}</p>}{event.result != null && <pre>{JSON.stringify(event.result, null, 2)}</pre>}</li>)}</ol><small>Run {status.run.id}</small></details>
     </div>}
     {error && <p className="harness-alert" role="alert">{error}</p>}
-    <details className="harness-setup"><summary>Add a demo</summary><p>Import a good take. Approve it. Moved the bin? Teach it again.</p>
-      <div className="harness-inputs"><label>Take #<input type="number" min={2} value={episode} onChange={e => { setEpisode(Number(e.target.value)); setReviewed(false); }} /></label><label>What it did<input value={description} maxLength={200} onChange={e => setDescription(e.target.value)} /></label><button className="quiet-button" disabled={!!active} onClick={() => { setReviewed(false); void command("import", { episode, description }); }}>Import</button></div>
+    {notice && <p className="harness-notice" role="status">{notice}</p>}
+    <details className="harness-setup"><summary>Add a demo</summary><p>Find a saved take from your task, review it, then approve the example for Codex.</p>
+      <div className="harness-inputs"><label>Episode ID<input type="number" min={0} value={episode} onChange={e => { setEpisode(Number(e.target.value)); setReviewed(false); }} /></label><label>What it did<input value={description} maxLength={200} onChange={e => setDescription(e.target.value)} /></label><button className="quiet-button" disabled={!!active || !prompt.trim()} onClick={async () => { setReviewed(false); const result = await command("find_episode", { query: prompt }); if (result && Number.isInteger(result.episode)) { setEpisode(result.episode); setDescription(result.description); } }}>Find for task</button><button className="quiet-button" disabled={!!active} onClick={() => { setReviewed(false); void command("import", { episode, description }); }}>Import ID</button></div>
       {currentSkill && <div className="harness-plan"><strong>{currentSkill.description}</strong><p>{currentSkill.conversion}. ~{Math.ceil(currentSkill.duration)}s.</p><p>{currentSkill.approved ? "Approved." : "Not yet."}</p>{!currentSkill.approved && <><label className="harness-check"><input type="checkbox" checked={reviewed} onChange={e => setReviewed(e.target.checked)} />I watched it work. I&apos;ll watch the first run.</label><button className="quiet-button" disabled={!!active || !reviewed} onClick={() => void command("approve", { skill_id: currentSkill.id, reviewed })}>Approve</button></>}</div>}
     </details>
     <div className="harness-actions harness-footer"><span>Goes slow (max {status?.motion_policy?.max_speed ?? 3}). Hold the arm when it stops.</span><button className="estop-button" disabled={offline} onClick={() => void command("stop", {})}>STOP</button></div>
