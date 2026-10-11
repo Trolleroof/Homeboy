@@ -319,7 +319,9 @@ class TaskHarness:
             report.append({"skill_id": skill["id"], "description": skill["description"],
                            "video_score": None if match["score"] is None else round(match["score"], 3), "keewano": context})
         return {"ok": True, "query_matched_video": matched, "skills": report, "robot_moved": False,
-                "scope": "Keewano outcomes, telemetry and lifecycle logs for approved taught skills. Read-only; no plan or motion."}
+                "project": run_analytics.project_overview(),
+                "scope": "Keewano outcomes, telemetry and lifecycle logs for approved taught skills, plus a project-wide "
+                         "rollup. Read-only; no plan or motion."}
 
     def command(self, action, payload):
         if action == "confirm_sms":
