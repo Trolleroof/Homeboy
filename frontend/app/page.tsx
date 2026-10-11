@@ -88,6 +88,7 @@ export default function Home() {
   const [stopping, setStopping] = useState(false);
   const teachingAbort = useRef<AbortController | null>(null);
   const [calibrationOpen, setCalibrationOpen] = useState(false);
+  const [demoOpen, setDemoOpen] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [forcedCameras, setForcedCameras] = useState<Record<string, boolean>>({});
@@ -205,6 +206,13 @@ export default function Home() {
     void loop();
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [refreshStatus, refreshLibrary]);
+
+  useEffect(() => {
+    if (!demoOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setDemoOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [demoOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -492,6 +500,15 @@ export default function Home() {
   const connectionText = !bridgeOnline ? "Offline" : !teleopReady(status) ? "Checking arms" : !status.data_quality?.ready ? "Checking camera" : linked ? "Ready" : "Arms on";
 
   return (
+    <>
+    {demoOpen && (
+      <div className="demo-backdrop" role="presentation" onClick={() => setDemoOpen(false)}>
+        <div className="demo-dialog" role="dialog" aria-modal="true" aria-label="Demo video" onClick={(event) => event.stopPropagation()}>
+          <div className="demo-dialog-bar"><strong>Demo</strong><button type="button" className="quiet-button" onClick={() => setDemoOpen(false)}>Close</button></div>
+          <video src="/demo.mp4" controls autoPlay playsInline />
+        </div>
+      </div>
+    )}
     <main className="app-shell">
       {calibrationOpen && <CalibrationDialog onClose={() => { setCalibrationOpen(false); void refreshStatus(); }} />}
       <aside className="rail">
@@ -501,6 +518,7 @@ export default function Home() {
           <a className="nav-item active" href="#teach"><span className="nav-icon">↗</span>Teach</a>
           <a className="nav-item" href="#library"><span className="nav-icon">▧</span>Saved<span className="nav-count">{library.length}</span></a>
           <button type="button" className="nav-item calibration-nav" disabled={busy} onClick={() => setCalibrationOpen(true)}><span className="nav-icon" aria-hidden="true">↻</span>Calibrate</button>
+          <button type="button" className="nav-item calibration-nav" onClick={() => setDemoOpen(true)}><span className="nav-icon" aria-hidden="true">▶</span>Demo</button>
         </nav>
         <button className="rail-sync-button" type="button" disabled={!syncAvailable || busy} onClick={() => void syncArms()} title={syncAvailable ? "Move follower to the leader's current pose and engage teleop" : "Sync is available when both arms are connected, idle, and reporting six fresh joints"}>
           <span aria-hidden="true">↻</span><b>{busy && notice.startsWith("Syncing") ? "Syncing arms…" : "Sync arms"}</b>
@@ -580,6 +598,7 @@ export default function Home() {
         </div>
       </section>
     </main>
+    </>
   );
 }
 
