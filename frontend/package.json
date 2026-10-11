@@ -14,7 +14,9 @@
     "hyparquet-compressors": "^1.1.2",
     "next": "16.4.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "three": "^0.186.1",
+    "urdf-loader": "^0.13.1"
   },
   "devDependencies": {
     "@keewano/codegen": "^1.1.0-111",

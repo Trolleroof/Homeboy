@@ -27,14 +27,21 @@ export default function HarnessPanel() {
     try {
       const response = await fetch("/api/bridge/harness/status", { cache: "no-store" });
       const body = await response.json();
-      if (!response.ok) { setOffline(true); return; }
+      if (!response.ok || body.offline) { setOffline(true); return false; }
       setStatus(body); setOffline(false);
-    } catch { setOffline(true); }
+      return true;
+    } catch { setOffline(true); return false; }
   }, []);
   useEffect(() => {
-    const first = window.setTimeout(() => void refresh(), 0);
-    const timer = window.setInterval(() => void refresh(), 1500);
-    return () => { window.clearTimeout(first); window.clearInterval(timer); };
+    let cancelled = false;
+    let timer = 0;
+    const loop = async () => {
+      const online = await refresh();
+      if (cancelled) return;
+      timer = window.setTimeout(loop, online ? 1500 : 5000);
+    };
+    void loop();
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [refresh]);
   async function command(action: string, body: Record<string, unknown>) {
     setBusy(true); setError("");
@@ -54,8 +61,8 @@ export default function HarnessPanel() {
   const awaitingSMS = status?.plan?.source === "dial_sms" && !status.plan.sms_confirmed;
   return <section className="card harness-card" id="prompt">
     <div className="card-topline"><span className="step-tag">PROMPT → ACTION → CHECK</span><span className="harness-cost">CODEX PLANNING · LOCAL MOTOR CONTROL</span></div>
-    <div className="harness-heading"><div><h2>Tell Willow what to do.</h2><p>Codex retrieves a skill from vector memory and builds a motor program. Willow runs it locally, checks the camera, and remembers verified successes.</p></div><span className={`connection-pill ${motorsFresh ? "connected" : ""}`}><span className="pulse" />{motorsFresh ? "Motor readings live" : "Robot unavailable"}</span></div>
-    {offline && <p className="harness-alert">The prompt controller is offline. Start the bridge below to import skills and plan tasks.</p>}
+    <div className="harness-heading"><div><h2>Run from a prompt</h2><p>Codex plans from approved episodes. Motors and vision run locally on the bridge.</p></div><span className={`connection-pill ${motorsFresh ? "connected" : ""}`}><span className="pulse" />{motorsFresh ? "Motors live" : "Offline"}</span></div>
+    {offline && <p className="harness-alert">Harness offline. Connect the bridge to import episodes and plan.</p>}
     <div className="harness-actions"><span>Reconnect and power both arms for physical execution.</span><button className="quiet-button" disabled={!!active || !!status?.motion.active} onClick={async () => {
       setBusy(true); setError("");
       try {

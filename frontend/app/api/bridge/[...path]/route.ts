@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { config, recorderURL, start, status, stop } from "@/lib/robot-bridge";
 import { GET as skillsGET, POST as skillsPOST } from "../../skills/route";
 import { GET as videoGET } from "../../video/route";
+import fs from "node:fs";
+import path from "node:path";
+import { root } from "@/lib/robot-bridge";
 
 
 const actions = new Set(["status", "record", "stop", "discard", "save", "task", "estop", "rearm", "engage", "disengage"]);
@@ -24,6 +27,19 @@ async function handle(request: Request, context: Context) {
     if (group === "config" && !post && ["arms", "cameras"].includes(action)) {
       const c = config(); return NextResponse.json(action === "arms" ? { robotPort: c.robotPort, teleopPort: c.teleopPort } : { cameras: c.cameras });
     }
+    if (group === "config" && action === "cameras" && post) {
+      const body = await request.json() as { overheadIndex?: number };
+      if (!Number.isInteger(body.overheadIndex) || (body.overheadIndex ?? -1) < 0 || (body.overheadIndex ?? 0) > 15) {
+        return NextResponse.json({ error: "Overhead camera index must be an integer from 0 to 15." }, { status: 400 });
+      }
+      const cameras = JSON.parse(fs.readFileSync(path.join(root, "config/cameras.json"), "utf8")) as Record<string, number>;
+      if (!Object.hasOwn(cameras, "wrist")) return NextResponse.json({ error: "Camera config must include wrist." }, { status: 500 });
+      if (!Object.hasOwn(cameras, "overhead")) cameras.overhead = 1;
+      if (body.overheadIndex === cameras.wrist) return NextResponse.json({ error: "Overhead and wrist cameras must use different indexes." }, { status: 400 });
+      cameras.overhead = body.overheadIndex!;
+      fs.writeFileSync(path.join(root, "config/cameras.json"), `${JSON.stringify(cameras, null, 2)}\n`);
+      return NextResponse.json({ ok: true, cameras: Object.entries(cameras).map(([name, index]) => ({ name, index })) });
+    }
     if (group === "daemon") {
       if (!post && action === "status") return NextResponse.json(status());
       if (post && action === "start") return NextResponse.json(await start(String((await request.json()).task ?? "")));
@@ -40,6 +56,9 @@ async function handle(request: Request, context: Context) {
       cache: "no-store", signal: stream ? request.signal : AbortSignal.timeout(15_000) });
     return new Response(response.body, { status: response.status, headers: { "Content-Type": response.headers.get("content-type") ?? "application/json", "Cache-Control": "no-store" } });
   } catch (error) {
-    return NextResponse.json({ ok: false, offline: true, error: (error as Error).message, message: "Recorder is offline. Start teaching to connect the arms.", ...status() }, { status: 503 });
+    const offline = { ok: false, offline: true, error: (error as Error).message, message: "Recorder is offline. Start teaching to connect the arms.", ...status() };
+    // A status poll answering "the recorder is down" is a successful check, not a server failure.
+    const statusPoll = !post && action === "status" && (group === "recorder" || group === "harness");
+    return NextResponse.json(offline, { status: statusPoll ? 200 : 503 });
   }
 }
