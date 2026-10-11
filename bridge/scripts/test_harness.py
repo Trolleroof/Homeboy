@@ -431,7 +431,8 @@ class HarnessTests(unittest.TestCase):
 
     def test_run_history_slows_planned_replay(self):
         seen = self.plan_with_policy({"speed": 1.5, "policy": "slowed_by_history", "hold": False, "success_rate": .9, "reason": "3 failed fast runs"})
-        self.assertEqual(seen["analytics"]["speed"], 1.5)
+        self.assertEqual(seen["analytics"]["speed_policy"]["speed"], 1.5)
+        self.assertFalse(seen["analytics"]["keewano"]["available"])
         self.assertEqual(self.harness.plan["speed"], 1.5)
         self.assertEqual(self.harness.plan["policy"]["policy"], "slowed_by_history")
         self.assertGreater(self.harness.plan["duration"], MotionProgram(frames()).duration)
@@ -525,6 +526,61 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(len(later["previous_run"]["telemetry"]), 12)
         with self.assertRaises(ValueError):
             self.harness._example({**skill, "sha256": "changed"}, 0, "previous")
+
+
+    def test_keewano_runs_of_retrieved_video_open_local_telemetry(self):
+        self.add_skill()
+        self.harness.plan = None
+        skill = self.harness.catalog()[0]
+        skill["demonstration_evidence"] = {"source": "unavailable", "measured_samples": 0, "samples": []}
+        (Path(self.tmp.name)/"skill-2.json").write_text(json.dumps(skill))
+        evidence = {"id": "a" * 32, "result": "failure", "events": [{"event": "tool_failed", "error": "tracking diverged"}],
+                    "telemetry": [{"elapsed_s": i/30, "measured": pose(.2), "commanded": pose(.3), "tracking_delta": 7.1} for i in range(30)]}
+        self.harness.memory.record_run(skill, {"prompt": skill["description"], "sha256": skill["sha256"]}, evidence)
+        context = {"available": True, "recent_runs": [
+            {"harness_run_id": "a" * 32, "verdict": "failure", "same_video": True},
+            {"harness_run_id": "b" * 32, "verdict": "failure", "same_video": True}]}
+        result = {"matches": [{"skill_id": "episode-2", "score": .9, "video_sha256": "v" * 64}], "history": [], "experiences": []}
+        seen = {}
+        def codex(prompt, tools, dispatch, cancel, event, timeout):
+            dispatch("retrieve_skills", {"query": "Place the orange block in the bin"})
+            with self.assertRaises(ValueError):
+                dispatch("read_example", {"skill_id": "episode-2", "run_id": "a" * 32})
+            seen["analytics"] = dispatch("read_run_analytics", {"skill_id": "episode-2"})
+            seen["past"] = dispatch("read_example", {"skill_id": "episode-2", "run_id": "a" * 32})
+            with self.assertRaises(ValueError):  # in Keewano but no local evidence
+                dispatch("read_example", {"skill_id": "episode-2", "run_id": "b" * 32})
+        with patch.object(self.harness.memory, "search", return_value=result), patch.object(task_harness, "run_codex", side_effect=codex), \
+                patch.object(task_harness.run_analytics, "run_context", return_value=context) as run_context, \
+                patch.object(task_harness.run_analytics, "export_run"):
+            self.harness.command("plan", {"prompt": "Place the orange block in the bin"})
+            self.wait_job()
+        run_context.assert_called_once_with("episode-2", skill["sha256"], "v" * 64)
+        runs = seen["analytics"]["keewano"]["recent_runs"]
+        self.assertEqual([r["local_evidence"] for r in runs], [True, False])
+        self.assertEqual(seen["past"]["previous_run"]["result"], "failure")
+        self.assertEqual(seen["past"]["previous_run"]["telemetry"][0]["tracking_delta"], 7.1)
+
+
+    def test_insights_answers_from_keewano_without_creating_a_run(self):
+        self.add_skill()
+        skill = self.harness.catalog()[0]
+        ranked = [{"skill_id": "episode-2", "score": .8, "video_sha256": "v" * 64}]
+        context = {"available": True, "recent_runs": [], "summary": {}}
+        before = (len(self.recorder.robot.bus.history), self.harness.run, self.harness.plan)
+        with patch.object(self.harness.memory, "rank_videos", return_value=ranked), \
+                patch.object(task_harness.run_analytics, "run_context", return_value=context) as run_context:
+            result = self.harness.command("insights", {"query": "how is the orange block task doing?"})
+        run_context.assert_called_once_with("episode-2", skill["sha256"], "v" * 64, with_policy=True)
+        self.assertTrue(result["query_matched_video"])
+        self.assertEqual(result["skills"][0]["keewano"], context)
+        self.assertFalse(result["robot_moved"])
+        self.assertEqual((len(self.recorder.robot.bus.history), self.harness.run, self.harness.plan), before)
+        with patch.object(self.harness.memory, "rank_videos", side_effect=OSError("embedding offline")), \
+                patch.object(task_harness.run_analytics, "run_context", return_value=context):
+            fallback = self.harness.insights("stats")
+        self.assertEqual([s["skill_id"] for s in fallback["skills"]], ["episode-2"])
+        self.assertFalse(fallback["query_matched_video"])
 
 
 if __name__ == "__main__":

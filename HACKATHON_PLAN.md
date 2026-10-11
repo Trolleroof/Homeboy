@@ -2,13 +2,13 @@
 
 **Sprint length:** 12 hours from the agreed start time. Use elapsed time H+00 through H+12 so this works regardless of when the event begins.
 
-**Customer promise:** A person teaches the SO-101 one known tabletop task by moving the leader arm. Later they text a request, Willow finds the matching saved demonstration, asks them to confirm, runs only that previously taught routine in the same checked workcell, and texts back the result with a clip. Each request leaves a trace of what was asked, which episode was selected, what happened, and how long it took.
+**Customer promise:** A person teaches the SO-101 one known tabletop task by moving the leader arm. Later they text a request, Homeboy finds the matching saved demonstration, asks them to confirm, runs only that previously taught routine in the same checked workcell, and texts back the result with a clip. Each request leaves a trace of what was asked, which episode was selected, what happened, and how long it took.
 
 **Demo task:** Pick up the orange block and place it in the fixed bin. Keep the table, block, bin, arms, and camera positions fixed for the first full run. If safe replay is not built and verified, show retrieval and the saved clip, then stop at human confirmation. Do not claim the robot completed the task.
 
 ## What has been verified previously (historical evidence)
 
-- The Willow dashboard and its project-owned bridge run independently of the SUDS dashboard.
+- The Homeboy dashboard and its project-owned bridge run independently of the SUDS dashboard.
 - Both SO-101 arms were found on their configured serial ports. All six motors on each arm responded, joint readings were available, and teleop reached record-ready.
 - The wrist camera produced a live 640×480 image.
 - The browser Start teaching → Stop teaching → Save flow saved an episode and wrist video. Two more short engage/record/stop/discard cycles passed.
@@ -121,7 +121,7 @@ Keep in order: (1) safe real teaching and saved clip, (2) EmbeddingGemma 2 video
 
 ## Commands and places to find evidence
 
-- Willow UI: from frontend/, run npm run dev; open http://127.0.0.1:3217 (currently reachable).
+- Homeboy UI: from frontend/, run npm run dev; open http://127.0.0.1:3217 (currently reachable).
 - The project bridge starts from the dashboard when teaching begins and listens on localhost port 8621.
 - EmbeddingGemma 2: project `.embedding-venv`, service auto-start on port 8622. See frontend/README.md. Ollama is only used by optional Task labels mode.
 - Arm config: [bridge/config/arms.json](bridge/config/arms.json). Current camera config: [bridge/config/cameras.json](bridge/config/cameras.json), wrist=0.

@@ -32,6 +32,16 @@ class FakeBridge:
             self.status = {"active": True, "plan": None,
                            "run": {"id": "planning", "request_id": payload["request_id"], "kind": "planning"}}
             return {"ok": True, "run_id": "planning"}
+        if action == "insights":
+            return {"ok": True, "robot_moved": False, "skills": [{
+                "skill_id": "episode-2", "description": "Put the orange block in the bin", "video_score": .78,
+                "keewano": {"available": True, "summary": {"last_verdicts": ["failure", "success", "success"], "success_rate": .67,
+                            "same_video_decided_runs": 3, "same_video_success_rate": .67, "avg_max_tracking": 5.1,
+                            "peak_max_tracking": 7.1, "tracking_stop_at": 8.0, "peak_motor_temp_c": 46},
+                            "speed_policy": {"speed": 2.0, "policy": "slowed_by_history"},
+                            "failure_modes": {"blocked_reasons": {"tracking": 2}, "error_classes": {"camera": 1}},
+                            "recent_runs": [{"verdict": "failure", "at": "2026-10-11T18:33:04",
+                                             "log": [{"value": "planning"}, {"value": "tool_failed"}, {"value": "tracking"}]}]}}]}
         if action == "confirm_sms":
             p = self.status["plan"]
             if not p or payload["plan_id"] != p["id"] or payload["request_id"] != p["request_id"]:
@@ -253,6 +263,36 @@ class SMSTests(unittest.IsolatedAsyncioTestCase):
             Bridge("https://robot.example.com")
         with self.assertRaises(ValueError):
             await Bridge("http://127.0.0.1:8621").call("run", plan_id="anything")
+
+
+    async def test_stats_question_reads_keewano_without_planning(self):
+        await self.adapter.handle(self.event("How is the orange block task doing? Show recent logs"))
+        self.assertEqual([c[0] for c in self.bridge.calls], ["insights"])
+        self.assertEqual(self.bridge.calls[0][1]["query"], "How is the orange block task doing? Show recent logs")
+        self.assertEqual(self.state.active(), [])
+        body = self.messages[-1][1]
+        for expected in ("Keewano", "no motion", "67% success", "peak 7.1", "tracking x2", "planning > tool_failed > tracking", "speed 2"):
+            self.assertIn(expected, body)
+
+    async def test_stats_question_is_answered_while_a_task_is_pending(self):
+        await self.pending()
+        await self.adapter.handle(self.event("why did it fail last time?", event_id="event-2"))
+        self.assertEqual(sum(c[0] == "plan" for c in self.bridge.calls), 1)
+        self.assertEqual(self.bridge.calls[-1][0], "insights")
+        self.assertIn("Keewano", self.messages[-1][1])
+
+    async def test_unavailable_history_is_reported_without_motion(self):
+        self.bridge.fail = TimeoutError()
+        await self.adapter.handle(self.event("send me the stats"))
+        self.assertEqual([c[0] for c in self.bridge.calls], ["insights"])
+        self.assertIn("unavailable", self.messages[-1][1])
+        self.assertIn("No motion", self.messages[-1][1])
+
+    def test_tasks_are_not_mistaken_for_stats_questions(self):
+        for task in ("Put the orange block in the bin", "Please place the red cube on the table", "RUN 123456"):
+            self.assertFalse(dial_sms.wants_insights(task), task)
+        for question in ("stats", "show logs", "How did the last run go?", "what's the success rate", "why did it fail", "any errors today?"):
+            self.assertTrue(dial_sms.wants_insights(question), question)
 
 
 if __name__ == "__main__":

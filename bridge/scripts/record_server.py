@@ -214,10 +214,11 @@ def recorder_data_issues(
     issues = []
     if not task.strip():
         issues.append("task description cannot be empty")
-    if camera_meta != TRAINING_CAMERAS:
+    if any(TRAINING_CAMERAS.get(name) != index for name, index in camera_meta.items()):
         expected = " and ".join(f"{name}={index}" for name, index in sorted(TRAINING_CAMERAS.items()))
-        issues.append(f"camera labels must be {expected} (from {CAMERAS_CONFIG_PATH.name})")
-    if set(camera_meta) != dataset_cameras:
+        issues.append(f"camera labels must match {expected} (from {CAMERAS_CONFIG_PATH.name})")
+    dataset_names = set(camera_meta) & dataset_cameras
+    if not dataset_names:
         issues.append("recorder camera names do not match the dataset")
     if fps != dataset_fps:
         issues.append(f"recorder is {fps} fps but dataset is {dataset_fps} fps")
@@ -589,7 +590,26 @@ class Recorder:
         # reason not to queue: the operator is standing over the arms with a
         # hand on them, and a button that waits on a tick reads as a dead button.
         if name in ("engage", "disengage"):
-            return self._set_engaged(name == "engage", force=bool(payload.get("force")))
+            return self._set_engaged(name == "engage")
+        if name == "sync":
+            if payload.get("confirmed") is not True:
+                return {"ok": False, "error": "operator confirmation is required before the follower can move to the leader"}
+            with self.lock:
+                if self.state != IDLE:
+                    return {"ok": False, "error": f"sync arms is only available while idle, not {self.state}"}
+                if self.engaged:
+                    return {"ok": False, "error": "disengage teleop before syncing arms"}
+                if self.estop or self.calib is not None or self._autonomy is not None or self._command is not None:
+                    return {"ok": False, "error": "sync arms is unavailable during e-stop, calibration, or another motion"}
+                joint_readings = self._delta.get("joints") or {}
+                required_joints = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"}
+                if (time.time() - min(self._last_robot_pos_at, self._last_teleop_action_at) > 0.5
+                        or not required_joints.issubset(joint_readings)):
+                    return {"ok": False, "error": "fresh six-joint readings from both arms are required to sync"}
+            # This is the explicit, operator-confirmed path for closing an
+            # out-of-range pose gap. The follower is ramped to the live leader
+            # pose before tracking begins; normal engage remains delta-gated.
+            return self._set_engaged(True, force=True)
 
         done = threading.Event()
         with self.lock:
@@ -708,7 +728,7 @@ class Recorder:
         log.info("re-armed")
         return {"ok": True}
 
-    def _set_engaged(self, engaged: bool, force: bool = True) -> dict[str, Any]:
+    def _set_engaged(self, engaged: bool, force: bool = False) -> dict[str, Any]:
         """Hand the follower to the leader, or take it back."""
         verb = "engage" if engaged else "disengage"
         with self.lock:
@@ -720,7 +740,9 @@ class Recorder:
                 return {"ok": False, "error": f"cannot {verb} while calibrating"}
             if engaged != self.engaged and not engaged and self.state == RECORDING:
                 return {"ok": False, "error": "stop the take before disengaging"}
-            if engaged and (time.time() - min(self._last_robot_pos_at, self._last_teleop_action_at) > 0.5 or not self._delta.get("joints") or self._delta.get("max", 999) > self.delta_limit):
+            if engaged and (time.time() - min(self._last_robot_pos_at, self._last_teleop_action_at) > 0.5 or not self._delta.get("joints")):
+                return {"ok": False, "error": "fresh readings from both arms are required before engaging teleop"}
+            if engaged and self._delta.get("max", 999) > self.delta_limit and not force:
                 return {"ok": False, "error": "Align the leader and follower before engaging teleop"}
             if engaged == self.engaged:
                 return {"ok": True, "already": True}
@@ -733,6 +755,10 @@ class Recorder:
                 else:
                     self._rest_and_release()
         except Exception as err:  # noqa: BLE001
+            if force:
+                # A partial sync must never leave the follower energized in an
+                # intermediate pose; a failed ramp cuts torque immediately.
+                self.emergency_stop(f"sync failed: {err}")
             return {"ok": False, "error": f"could not {verb}: {err}"}
 
         with self.lock:
@@ -841,8 +867,13 @@ class Recorder:
                 name: name in self._last_camera_frames and self._camera_misses.get(name, 0) == 0
                 for name in self.camera_meta
             }
+            # Live-only cameras (such as overhead) may be added without changing
+            # an existing wrist-only episode schema. Require every dataset view
+            # to be configured and fresh, while allowing extra streams for UI.
+            dataset_camera_meta = {name: index for name, index in self.camera_meta.items() if name in dataset_cameras}
+            dataset_camera_streaming = {name: camera_streaming.get(name, False) for name in dataset_camera_meta}
             issues = recorder_data_issues(
-                self.task, self.fps, self.dataset.fps, self.camera_meta, dataset_cameras, camera_streaming
+                self.task, self.fps, self.dataset.fps, dataset_camera_meta, dataset_cameras, dataset_camera_streaming
             )
             return {
                 "state": self.state,
@@ -888,6 +919,10 @@ class Recorder:
                 },
                 "calibration": self._calibration_status,
                 "autonomy": self.autonomy_status(),
+                "motors": {
+                    "positions": dict(self._last_robot_pos),
+                    "age_s": round(now - self._last_robot_pos_at, 3) if self._last_robot_pos_at else None,
+                },
             }
 
     @property
@@ -1826,6 +1861,7 @@ COMMANDS = {
     "rearm",
     "engage",
     "disengage",
+    "sync",
     "calibrate_start",
     "calibrate_home",
     "calibrate_finish",
@@ -1978,7 +2014,7 @@ def main() -> int:
             robot.bus.connect()
             robot.bus.disable_torque()
             if not robot.is_calibrated:
-                raise RuntimeError("Follower calibration mismatch; calibrate the arm before connecting Willow")
+                raise RuntimeError("Follower calibration mismatch; calibrate the arm before connecting Homeboy")
             try:
                 configure_at_measured_pose(robot)
             finally:
@@ -2010,11 +2046,10 @@ def main() -> int:
             # it was not created with fails deep inside the writer, one Record press
             # later; catching it here says which names it actually wants.
             existing = {key.split(".")[-1] for key in dataset.meta.features if key.startswith(f"{OBS_STR}.images.")}
-            if existing != set(camera_meta):
+            if not existing.issubset(set(camera_meta)):
                 parser.error(
-                    f"{args.repo_id} was recorded with cameras {sorted(existing)}, but this run configures "
-                    f"{sorted(camera_meta)}. Pass --camera NAME=INDEX matching the dataset, or record into a new "
-                    "--repo-id."
+                    f"{args.repo_id} was recorded with cameras {sorted(existing)}, which are not all present in "
+                    f"the configured cameras {sorted(camera_meta)}. Restore the missing camera or record into a new --repo-id."
                 )
         else:
             dataset = LeRobotDataset.create(

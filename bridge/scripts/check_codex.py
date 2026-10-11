@@ -24,7 +24,7 @@ def main():
                                autonomy_status=lambda: {"active": False},
                                motor_telemetry=lambda: {"positions": {}, "age_s": None, "hardware_available": False,
                                                          "offline": True, "temperatures": {}, "motion": {"active": False}})
-    with tempfile.TemporaryDirectory(prefix="willow-plan-test-") as directory, patch.object(task_harness, "STORE", Path(directory)):
+    with tempfile.TemporaryDirectory(prefix="homeboy-plan-test-") as directory, patch.object(task_harness, "STORE", Path(directory)):
         (Path(directory)/"skill-2.json").write_text(json.dumps(skill))
         harness = TaskHarness(recorder)
         harness.command("plan", {"prompt": "Pick up the orange block and place it down"})

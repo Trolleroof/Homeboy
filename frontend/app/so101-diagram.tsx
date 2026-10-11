@@ -18,7 +18,7 @@ const IDLE: Record<(typeof JOINT_ORDER)[number], number> = {
   shoulder_lift: 0.55,
   elbow_flex: 0.85,
   wrist_flex: 0.25,
-  wrist_roll: Math.PI / 2,
+  wrist_roll: Math.PI * 1.5,
   gripper: 0.55,
 };
 
@@ -28,7 +28,7 @@ const GRIPPER_OPEN = 1.74533;
 type DiagramStatus = {
   state: string;
   offline?: boolean;
-  teleop?: { engaged?: boolean; ready?: boolean; record_ready?: boolean };
+  teleop?: { engaged?: boolean; ready?: boolean; record_ready?: boolean; worst?: number; worst_joint?: string };
   estop?: { engaged?: boolean; reason?: string };
   delta?: { joints?: Record<string, { follower: number }> };
   motors?: { positions?: Record<string, number>; age_s?: number | null };
@@ -65,7 +65,7 @@ function liveTargets(status: DiagramStatus): Record<string, number> {
     if (typeof positions[name] === "number") next[name] = toUrdfRadians(name, positions[name]);
   }
   // Keep the jaws turned 90° counterclockwise from the motor reading.
-  if (typeof positions.wrist_roll === "number") next.wrist_roll += Math.PI / 2;
+  if (typeof positions.wrist_roll === "number") next.wrist_roll += Math.PI * 1.5;
   return next;
 }
 
@@ -78,6 +78,9 @@ function statusLabel(status: DiagramStatus): { line: string; tone: "offline" | "
   if (status.teleop?.engaged && status.teleop.record_ready) return { line: "Teleop · ready to record", tone: "live" };
   if (status.teleop?.engaged) return { line: "Teleop engaged", tone: "live" };
   if (status.teleop?.ready) return { line: "Leader / follower aligned", tone: "live" };
+  if (status.teleop?.worst_joint && typeof status.teleop.worst === "number") {
+    return { line: `Align ${status.teleop.worst_joint} · ${status.teleop.worst.toFixed(1)} / 25`, tone: "warn" };
+  }
   return { line: "Follower idle", tone: "offline" };
 }
 

@@ -16,10 +16,11 @@ type RecorderStatus = {
   saved_episodes: number;
   offline?: boolean;
   message?: string;
-  teleop?: { ready?: boolean; engaged?: boolean; record_ready?: boolean; worst?: number };
+  teleop?: { ready?: boolean; engaged?: boolean; record_ready?: boolean; worst?: number; worst_joint?: string };
+  hardware?: { teleop?: { motors_ok?: number; motors_total?: number }; follower?: { motors_ok?: number; motors_total?: number } };
   data_quality?: { ready?: boolean; issues?: string[]; camera_streaming?: Record<string, boolean> };
-  cameras?: string[];
   estop?: { engaged?: boolean; reason?: string };
+  calibration?: Record<string, unknown> | null;
   delta?: {
     joints?: Record<string, { follower: number; leader: number; delta: number }>;
     max?: number;
@@ -67,7 +68,7 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [overheadIndex, setOverheadIndex] = useState(1);
+  const [overheadIndex, setOverheadIndex] = useState(0);
   const [cameraSaving, setCameraSaving] = useState(false);
   const [cameraNotice, setCameraNotice] = useState("");
   const [cameraConfigLoaded, setCameraConfigLoaded] = useState(false);
@@ -185,7 +186,26 @@ export default function Home() {
       }
       await new Promise((resolve) => window.setTimeout(resolve, 700));
     }
-    throw new Error("The robot bridge did not become ready. Check the local Willow bridge and device connections.");
+    throw new Error("The robot bridge did not become ready. Check the local Homeboy bridge and device connections.");
+  }
+
+  async function syncArms() {
+    if (!syncAvailable) return;
+    const approved = window.confirm(
+      "Sync arms will move the follower smoothly to the leader's current pose over about 2 seconds, then leave teleop engaged. Clear the follower's path and keep a hand near STOP. Continue?",
+    );
+    if (!approved) return;
+    setBusy(true); setError(""); setNotice("Syncing the follower to the leader over about 2 seconds…");
+    try {
+      await call("recorder/sync", { confirmed: true });
+      const current = await waitFor((next) => next.teleop?.engaged === true && next.teleop?.ready === true, 10_000);
+      if (!current.teleop?.ready) throw new Error("Sync completed, but measured joint gaps are still above the 25-unit limit. Check follower motion and alignment.");
+      setNotice("Arms synced. Teleop is engaged and within the tracking limit.");
+    } catch (reason) {
+      setError((reason as Error).message);
+      setNotice("");
+      await refreshStatus();
+    } finally { setBusy(false); }
   }
 
   async function startTeaching() {
@@ -272,7 +292,7 @@ export default function Home() {
   async function emergencyStop() {
     setError("");
     try {
-      await call("recorder/estop", { reason: "operator stop from Willow skillbook" });
+      await call("recorder/estop", { reason: "operator stop from Homeboy skillbook" });
       skillToIndex.current = null;
       setNotice("Robot stopped. Re-arm only after checking the workspace and arm position.");
       await refreshStatus();
@@ -303,28 +323,37 @@ export default function Home() {
   const bridgeOnline = !status.offline;
   const preflightReady = bridgeOnline && status.teleop?.ready === true && status.data_quality?.ready === true;
   const linked = preflightReady && status.teleop?.engaged === true;
+  const syncAvailable = bridgeOnline && status.state === "idle" && !status.teleop?.engaged && !status.estop?.engaged
+    && !status.calibration && (status.hardware?.teleop?.motors_ok ?? 0) === 6
+    && (status.hardware?.follower?.motors_ok ?? 0) === 6 && Object.keys(status.delta?.joints ?? {}).length === 6;
   const shortTime = `${Math.floor(status.elapsed_s / 60).toString().padStart(2, "0")}:${Math.floor(status.elapsed_s % 60).toString().padStart(2, "0")}`;
   const wristStreaming = bridgeOnline && status.data_quality?.camera_streaming?.wrist === true;
   const overheadStreaming = bridgeOnline && status.data_quality?.camera_streaming?.overhead === true;
   const teachStage = recording ? "recording" : pending ? "save" : linked ? "ready" : bridgeOnline ? "syncing" : "offline";
-  const connectionText = !bridgeOnline ? "Robot not connected" : !status.teleop?.ready ? "Checking leader / follower" : !status.data_quality?.ready ? "Checking camera and dataset" : linked ? "Teleop synced" : "Leader / follower connected";
+  const connectionText = !bridgeOnline
+    ? "Robot not connected"
+    : !status.teleop?.ready
+      ? status.teleop?.worst_joint && typeof status.teleop.worst === "number"
+        ? `Align ${status.teleop.worst_joint} · ${status.teleop.worst.toFixed(1)} / 25`
+        : "Waiting for fresh arm readings"
+      : !status.data_quality?.ready
+        ? "Checking camera and dataset"
+        : linked ? "Teleop synced" : "Leader / follower connected";
 
   return (
     <main className="app-shell">
       <aside className="rail">
-        <a className="brand" href="#top" aria-label="Willow home"><span className="brand-mark"><span /><span /><span /></span><span>willow<span className="brand-period">.</span></span></a>
+        <a className="brand" href="#top" aria-label="Homeboy home"><span className="brand-mark"><span /><span /><span /></span><span>homeboy<span className="brand-period">.</span></span></a>
         <div className="rail-label">WORKSPACE</div>
         <nav className="nav-list" aria-label="Main navigation">
           <a className="nav-item" href="#prompt"><span className="nav-icon">✳</span>Prompt robot</a>
           <a className="nav-item active" href="#teach"><span className="nav-icon">↗</span>Teach & recall</a>
           <a className="nav-item" href="#library"><span className="nav-icon">▧</span>Recorded episodes<span className="nav-count">{library.length}</span></a>
         </nav>
+        <button className="rail-sync-button" type="button" disabled={!syncAvailable || busy} onClick={() => void syncArms()} title={syncAvailable ? "Move follower to the leader's current pose and engage teleop" : "Sync is available when both arms are connected, idle, disengaged, and reporting six fresh joints"}>
+          <span aria-hidden="true">↻</span><b>{busy && notice.startsWith("Syncing") ? "Syncing arms…" : "Sync arms"}</b>
+        </button>
         <div className="rail-spacer" />
-        <div className="rail-cell">
-          <div className="cell-label">ROBOT CELL</div>
-          <div className="cell-name"><span className={`pulse ${linked ? "live" : ""}`} />SO-101 · Leader / Follower</div>
-          <div className="cell-state">{connectionText}</div>
-        </div>
         <div className="rail-foot">LOCAL RECORDER<br />SO-101 TELEOP</div>
       </aside>
 
@@ -356,6 +385,7 @@ export default function Home() {
             <div className="teach-main">
             <article className="card teach-card">
               <div className="card-topline"><span className="step-tag">01 <span>·</span> RECORD</span><span className="tiny-live"><i className={recording ? "active" : ""} />{recording ? "RECORDING" : "IDLE"}</span></div>
+              {bridgeOnline && <div className={`sync-check ${status.teleop?.ready ? "sync-check-ready" : ""}`}><span className="sync-check-led" /><div><strong>{status.teleop?.ready ? "Leader and follower aligned" : status.teleop?.worst_joint ? `Align ${status.teleop.worst_joint.replaceAll("_", " ")}` : "Waiting for fresh arm readings"}</strong><small>{status.teleop?.ready ? "Within the 25-unit tracking limit" : typeof status.teleop?.worst === "number" ? `Largest gap ${status.teleop.worst.toFixed(1)} / 25 units · move the leader or follower by hand until all joint gaps are under 25` : "Both arms must report fresh readings before teleop can start"}</small></div><span className="sync-motor-count">L {status.hardware?.teleop?.motors_ok ?? 0}/{status.hardware?.teleop?.motors_total ?? 6} · F {status.hardware?.follower?.motors_ok ?? 0}/{status.hardware?.follower?.motors_total ?? 6}</span></div>}
               <label className="field-label" htmlFor="skill-description">Task label</label>
               <textarea id="skill-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Describe the task in a few words…" rows={2} disabled={recording || pending} />
               <div className="teach-bottom">
@@ -371,15 +401,15 @@ export default function Home() {
               <div className="section-heading"><div><span className="step-tag">LIVE VIEW</span><h2>Camera split view</h2></div><span className="section-sub">Live streams from the recorder.</span></div>
               <div className="camera-grid live-camera-grid">
                 <figure className="camera-frame wrist-frame"><figcaption><span className={`camera-led ${wristStreaming ? "on" : ""}`} /><strong>WRIST</strong><span>Gripper view</span><small>{wristStreaming ? "LIVE" : "WAITING"}</small></figcaption>{wristStreaming ? <MjpegStream key="wrist" src="/api/bridge/stream/wrist" alt="Live wrist camera feed" /> : <div className="camera-placeholder"><CameraMark /><span>{bridgeOnline ? "Waiting for wrist camera frames" : "Start the local recorder to connect the camera"}</span></div>}</figure>
-                <figure className="camera-frame wrist-frame"><figcaption><span className={`camera-led ${overheadStreaming ? "on" : ""}`} /><strong>OVERHEAD</strong><span>Workspace view</span><small>{overheadStreaming ? "LIVE" : "WAITING"}</small></figcaption>{overheadStreaming ? <MjpegStream key="overhead" src="/api/bridge/stream/overhead" alt="Live overhead workspace camera feed" /> : <div className="camera-placeholder"><CameraMark /><span>{bridgeOnline ? "Waiting for overhead camera frames" : "Start the local recorder to connect the camera"}</span></div>}</figure>
+                <figure className="camera-frame wrist-frame"><figcaption><span className={`camera-led ${overheadStreaming ? "on" : ""}`} /><strong>OVERHEAD</strong><span>Workspace view</span><small>{overheadStreaming ? "LIVE" : "WAITING"}</small></figcaption>{overheadStreaming ? <MjpegStream key="overhead" src="/api/bridge/stream/overhead" alt="Live overhead workspace camera feed" /> : <div className="camera-placeholder"><CameraMark /><span>{bridgeOnline ? "Waiting for overhead camera frames; restart the recorder after configuring this camera." : "Start the local recorder to connect the camera"}</span></div>}</figure>
               </div>
-              {cameraConfigLoaded && <div className="camera-index-control"><label htmlFor="overhead-index">Overhead camera index</label><select id="overhead-index" value={overheadIndex} disabled={bridgeOnline || cameraSaving} onChange={(event) => setOverheadIndex(Number(event.target.value))}>{[0, 1, 2, 3, 4, 5, 6, 7].map((index) => <option key={index} value={index}>{index}{index === 0 ? " · currently used by wrist" : ""}</option>)}</select><button className="quiet-button" disabled={bridgeOnline || cameraSaving} onClick={() => {
+              {cameraConfigLoaded && <div className="camera-index-control"><label htmlFor="overhead-index">Overhead camera index</label><select id="overhead-index" value={overheadIndex} disabled={bridgeOnline || cameraSaving} onChange={(event) => setOverheadIndex(Number(event.target.value))}>{[0, 1, 2, 3, 4, 5, 6, 7].map((index) => <option key={index} value={index}>{index}{index === 1 ? " · currently used by wrist" : ""}</option>)}</select><button className="quiet-button" disabled={bridgeOnline || cameraSaving} onClick={() => {
                 setCameraSaving(true); setCameraNotice("");
                 void fetch("/api/bridge/config/cameras", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ overheadIndex }) }).then(async (response) => {
                   const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Could not save camera mapping.");
-                  setCameraNotice(`Saved overhead camera index ${overheadIndex}. Start the recorder to check its live view.`);
+                  setCameraNotice(`Saved overhead camera index ${overheadIndex}.`);
                 }).catch((reason: Error) => setCameraNotice(reason.message)).finally(() => setCameraSaving(false));
-              }}>{cameraSaving ? "Saving…" : "Save index"}</button><span>{cameraNotice || (bridgeOnline ? "Stop the recorder before changing the camera mapping." : "Choose the device index assigned to your overhead camera.")}</span></div>}
+              }}>{cameraSaving ? "Saving…" : "Save index"}</button><span>{cameraNotice || (bridgeOnline ? "Camera map is active; stop and restart the recorder to apply index changes." : "Choose the device index assigned to your overhead camera.")}</span></div>}
             </section>
             </div>
           </section>
@@ -394,7 +424,7 @@ export default function Home() {
             {!searchMode && library.length > 0 && <div className="results-grid">{library.map((skill) => <article className="result-card" key={`${skill.repo_id}-${skill.episode_index}`}><div className="result-title"><span className="result-icon">↗</span><div><strong>{`Recording ${skill.episode_index + 1}`}</strong><small>{skill.repo_id} · episode {skill.episode_index}</small></div><span className="library-tag">{skill.video_indexed ? "VIDEO INDEXED" : "SAVED"}</span></div><video controls preload="metadata" src={`/api/bridge/video?repo_id=${encodeURIComponent(skill.repo_id)}&path=${encodeURIComponent(skill.video_path)}#t=${skill.video_from}`} /><div className="result-foot"><span>{skill.video_indexed ? "Searchable by recorded video content" : "Video content not indexed yet"}</span><button className="quiet-button" disabled={Boolean(indexing)} onClick={() => void indexVideo(skill.repo_id, skill.episode_index)}>{indexing === `${skill.repo_id}:${skill.episode_index}` ? "Indexing video…" : skill.video_indexed ? "Reindex video" : "Index video"}</button></div></article>)}</div>}
             {!searchMode && library.length === 0 && <div className="library-empty"><span className="empty-stack">▤</span><p>Saved episodes appear here after you record above.</p></div>}
           </section>
-          <footer className="page-foot"><span>WILLOW · SO-101</span><span>DATA STAYS ON THIS MACHINE</span></footer>
+          <footer className="page-foot"><span>HOMEBOY · SO-101</span><span>DATA STAYS ON THIS MACHINE</span></footer>
         </div>
       </section>
     </main>

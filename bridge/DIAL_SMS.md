@@ -166,3 +166,7 @@ number, tool connection, and local harness status are shown in the Homeboy
 frontend. Keep Dial credentials in ignored `bridge/.env.local`. A `kwpat-` token
 is for Keewano analytics and is not a Dial credential. Provider delivery and
 physical execution remain separate checks.
+
+## Run history and stats over SMS
+
+Questions about past runs ("how is the orange block task doing?", "show logs", "why did it fail?", "stats") go to the bridge's read-only `POST /harness/insights` endpoint, not the planner. The question is matched against the indexed demonstration videos (EmbeddingGemma). Homeboy replies with that skill's recent Keewano outcomes, success rate (including for the same video), tracking error, motor temperature, next replay speed, top failure reasons and the log of the latest run that didn't succeed. No request, plan or run is created. It works while a task is pending, and an unavailable Keewano is reported without retrying.

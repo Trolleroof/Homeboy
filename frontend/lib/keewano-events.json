@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "version": 2241952811,
-  "eventCount": 33,
-  "gzipDataBase64": "H4sIAAAAAAAA/02Q624TMRCF7UUCzZJticQLlSUQRCOFeOG/5Z02Vhzb2N4q+35cy/1+v/MgzDptxT/P8XfGx+celIvOiiRDwpaz+wB7h2jTTW1pegCjeXBrn27YRCJnD2FEdE2SQeLPsUewQ8LVLsiknRWoCvYYLi0wBY1H0tzqkA606RjGZ2LjvFAuYMGe/IfOZFLLYeVTqMRKGyPQoMqhnsF4z/vgiFrg3Q5jVp/D7ql6PUib47yAnZkbkkw2qLqMvYTdrSQ6pRDbAXsFpZAHmHqRnOfsNZSNc6aWxgyON1AN4xnP2dstcE3qDLyDchKCC7WRMXL2ngIn9PuSOlL9LBbsA0DTBTux5C7Yx8G9Qhtvx2H8BBf2zbp2MZ1nn2E0lcFijJOjXPAXKLdppzIuOfs61OaN7IWnKA0hS1r/DaotdAdDqxXZvsN4JjdNkGql7eEp94M4uSHUhQbXvi7YT6iuGKdW2C5QRmc5+wXVSafCdUEhZ7/hYn5t7oxWPWd/YDzVkXb0uZEY5yoV7C9cPnm9dvZAt/R1zBf/AMimtEFRAgAA",
+  "version": 1538559753,
+  "eventCount": 35,
+  "gzipDataBase64": "H4sIAAAAAAAA/02S624TMRCFvYsEmiXbEKkvVJZAKhopxEv/W95pY8WxF9tbZd+Pa6Hcabnf4TmY9bYR/zzH34zPHPk+ZPPG8CBcwCphDwB2DtGE28pQ9RAGM2dXddg1gcSEPYIB0QVJGom/xB7DFgk3GieCsoajTNkTuDbH4BQeCX2nQTrQpGMYbcTS1lxahyl7+h86FUEuupHPIOdLpTVHjTKaOoHRTl07S9Qc7zXoo/ochhfqLSdMtPMCtqa2czJeo2wi9hKGvcQbKRGrDnsFGRcHGFoebJ2w15CV1upCaN11vIG8Kzd8wt72wE2hIvAOsrFz1hVaeJ+wUzIcsN4TlJFspz5lZwBl48zYUHfK3nfdSzT+ru/KD3BlT68K68Nl9hEGE+EMej8+igF/gqx3OxF+kbDPXWy1Fi2vyUpJyILGf4G8h/bRVUpS21cYTcW6dEIulTm84L4RJ9aEWlfiqi5S9h3y69rKJVZzFN6ahP2A/DxTbhsnMWE/4Wp8bWa1km3CfsFoojzNaGMi3s9kSNlv2D5/vbDmQFW0OsaLP5uV6GPsUlp/YbhP95aL7tf0e/0DFpPCB3YCAAA=",
   "events": [
     {
       "id": 2500,
@@ -201,6 +201,18 @@
       "name": "VerdictConfidencePct",
       "type": 2,
       "dataType": "uint"
+    },
+    {
+      "id": 2533,
+      "name": "HarnessRunId",
+      "type": 1,
+      "dataType": "string"
+    },
+    {
+      "id": 2534,
+      "name": "VideoSampleHash",
+      "type": 1,
+      "dataType": "string"
     }
   ]
 }

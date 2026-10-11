@@ -42,7 +42,7 @@ export async function start(task: string) {
     const offline = ![settings.robotPort, settings.teleopPort].every(p => fs.existsSync(p));
     const processes = execFileSync("/bin/ps", ["-Ao", "pid=,command="], { encoding: "utf8" });
     if (!offline && processes.split("\n").some(line => /python[^ ]* .*\/health_server\.py(?: |$)/.test(line))) {
-      throw new Error("A robot health poller is running. Stop the SUDS dashboard and health_server.py before starting Willow; they also open the arm ports.");
+      throw new Error("A robot health poller is running. Stop the SUDS dashboard and health_server.py before starting Homeboy; they also open the arm ports.");
     }
     if (!task.trim() || task.length > 200 || /[\r\n]/.test(task)) throw new Error("Use a task label of 1–200 characters on one line.");
     if (settings.robotPort === settings.teleopPort) throw new Error("Leader and follower require different ports.");

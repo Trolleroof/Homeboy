@@ -7,7 +7,7 @@ import path from "node:path";
 import { root } from "@/lib/robot-bridge";
 
 
-const actions = new Set(["status", "record", "stop", "discard", "save", "task", "estop", "rearm", "engage", "disengage"]);
+const actions = new Set(["status", "record", "stop", "discard", "save", "task", "estop", "rearm", "engage", "disengage", "sync"]);
 type Context = { params: Promise<{ path: string[] }> };
 export async function GET(request: Request, context: Context) { return handle(request, context); }
 export async function POST(request: Request, context: Context) { return handle(request, context); }
@@ -33,8 +33,6 @@ async function handle(request: Request, context: Context) {
         return NextResponse.json({ error: "Overhead camera index must be an integer from 0 to 15." }, { status: 400 });
       }
       const cameras = JSON.parse(fs.readFileSync(path.join(root, "config/cameras.json"), "utf8")) as Record<string, number>;
-      if (!Object.hasOwn(cameras, "wrist")) return NextResponse.json({ error: "Camera config must include wrist." }, { status: 500 });
-      if (!Object.hasOwn(cameras, "overhead")) cameras.overhead = 1;
       if (body.overheadIndex === cameras.wrist) return NextResponse.json({ error: "Overhead and wrist cameras must use different indexes." }, { status: 400 });
       cameras.overhead = body.overheadIndex!;
       fs.writeFileSync(path.join(root, "config/cameras.json"), `${JSON.stringify(cameras, null, 2)}\n`);
@@ -51,8 +49,19 @@ async function handle(request: Request, context: Context) {
     if (stream) endpoint = `${new URL(request.url).searchParams.get("mode") === "snapshot" ? "snapshot" : "stream"}?camera=${encodeURIComponent(action)}`;
     if (group === "recorder" && actions.has(action) && (post ? action !== "status" : action === "status")) endpoint = action;
     if (!endpoint) return NextResponse.json({ error: "Unknown bridge endpoint" }, { status: 404 });
+    let body: string | undefined;
+    if (post) {
+      body = await request.text();
+      if (group === "recorder" && action === "sync") {
+        let payload: unknown;
+        try { payload = JSON.parse(body || "{}"); } catch { payload = null; }
+        if (!payload || typeof payload !== "object" || (payload as { confirmed?: unknown }).confirmed !== true) {
+          return NextResponse.json({ ok: false, error: "Confirm the follower movement in the dashboard before syncing arms." }, { status: 400 });
+        }
+      }
+    }
     const response = await fetch(`${recorderURL}/${endpoint}`, { method: request.method,
-      headers: { "Content-Type": "application/json" }, body: post ? await request.text() : undefined,
+      headers: { "Content-Type": "application/json" }, body,
       cache: "no-store", signal: stream ? request.signal : AbortSignal.timeout(15_000) });
     return new Response(response.body, { status: response.status, headers: { "Content-Type": response.headers.get("content-type") ?? "application/json", "Cache-Control": "no-store" } });
   } catch (error) {

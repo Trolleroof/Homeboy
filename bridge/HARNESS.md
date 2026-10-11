@@ -1,4 +1,4 @@
-# Willow prompt-to-action harness
+# Homeboy prompt-to-action harness
 
 This version adds Codex tool calling and shared vector retrieval, a bounded SO-101 trajectory interpreter, scene checks, outcome evidence, and a prompting box to the existing Skillbook. Open **http://127.0.0.1:3217/#prompt** for the current running instance.
 

@@ -12,6 +12,8 @@ import uuid
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from dial_sms import insights_text
+
 ROOT = Path(__file__).resolve().parents[2]
 
 def load_local():
@@ -43,7 +45,10 @@ app = FastMCP("Homeboy robot harness", instructions=(
     "Call willow_status before describing robot or harness readiness. For orange block placement requests, "
     "use willow_plan_task, which only plans a taught task and never moves the robot. Explain when no approved "
     "skill exists, when the bridge is offline, or when hardware is unavailable. Never claim execution occurred. "
-    "A human must approve the exact plan and start any motion in Homeboy's local frontend."
+    "A human must approve the exact plan and start any motion in Homeboy's local frontend. "
+    "When the caller asks about past runs, stats, success rate, failures, errors, logs, telemetry or why something "
+    "failed, call willow_run_history with their question instead of planning a task; it reads Keewano history only "
+    "and never involves the robot. Read the spoken_summary back briefly and offer details from the runs."
 ), streamable_http_path="/mcp", json_response=True, stateless_http=True, port=8623,
     transport_security=TransportSecuritySettings(
         allowed_hosts=["127.0.0.1:8623", "localhost:8623", "d67f-12-91-134-18.ngrok-free.app"],
@@ -61,12 +66,12 @@ def caller(ctx: Context) -> str:
         raise ValueError("This voice tool is available only to the authorized inbound caller.")
     return who
 
-def bridge(action, payload=None):
+def bridge(action, payload=None, timeout=8):
     request = urllib.request.Request(BRIDGE+"/harness/"+action,
         data=json.dumps(payload or {}).encode() if payload is not None else None,
         headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
         try: reason = json.load(exc).get("error", "Homeboy refused the request")
@@ -110,6 +115,26 @@ def willow_plan_task(task: str, ctx: Context) -> dict:
                 "robot_moved": False}
     return {"accepted": True, "request_id": request_id, "planning_run_id": result.get("run_id"),
             "robot_moved": False, "next_step": "Tell the caller a plan is being prepared in Homeboy's frontend. A local operator must review the plan, workcell and live robot status before choosing whether to run it."}
+
+@app.tool()
+def willow_run_history(question: str, ctx: Context) -> dict:
+    """Answer questions about Homeboy's past runs from Keewano: recent outcomes, success rate, replay speed,
+    tracking error, motor temperature, failure reasons and lifecycle logs, for the taught skill whose
+    demonstration video best matches the question. Read-only; never plans or moves the robot."""
+    number = caller(ctx)
+    if not isinstance(question, str) or len(question) > 300:
+        raise ValueError("Ask one question of at most 300 characters.")
+    result = bridge("insights", {"query": question.strip()}, timeout=30)
+    audit("run_history_read", number, ok=result.get("ok") is True)
+    if not result.get("ok"):
+        return {"available": False, "error": result.get("error", "Run history unavailable."), "robot_moved": False}
+    # Drop raw entity ids; the caller needs outcomes, telemetry and logs.
+    skills = [{"description": s["description"], "video_score": s.get("video_score"),
+               **{k: v for k, v in (s.get("keewano") or {}).items() if k in ("available", "reason", "summary", "speed_policy", "failure_modes")},
+               "recent_runs": [{k: v for k, v in r.items() if k not in ("entity", "harness_run_id")} for r in (s.get("keewano") or {}).get("recent_runs", [])]}
+              for s in result.get("skills", [])]
+    return {"available": True, "spoken_summary": insights_text(result, limit=900), "skills": skills,
+            "query_matched_video": result.get("query_matched_video"), "robot_moved": False}
 
 if __name__ == "__main__":
     import uvicorn

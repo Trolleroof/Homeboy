@@ -2,7 +2,7 @@
 
 ## What changed
 
-The installed Ollama `embeddinggemma` model was version 1, which only embedded text labels. Google’s current EmbeddingGemma 2 supports native video input. Willow now uses version 2 locally for video-only search.
+The installed Ollama `embeddinggemma` model was version 1, which only embedded text labels. Google’s current EmbeddingGemma 2 supports native video input. Homeboy now uses version 2 locally for video-only search.
 
 Official reference: https://ai.google.dev/gemma/docs/embeddinggemma/multimodal-embeddinggemma-with-sentence-transformers
 

@@ -65,3 +65,7 @@ tool calls as Dial invokes the tools during a call. Dial's own
 [receive-call guide](https://docs.getdial.ai/documentation/capabilities/receive-a-voice-call)
 explains managed inbound voice; [Context MCP](https://docs.getdial.ai/documentation/platform/context-mcp)
 documents server tools and the per-call headers used by the caller check.
+
+## Run history tool
+
+`willow_run_history(question)` answers callers' questions about past runs, stats, failures and logs from Keewano through the bridge's read-only `/harness/insights` endpoint. It returns a `spoken_summary` plus per-run outcomes and telemetry for the skill whose demonstration video best matches the question. It never plans or moves the robot. A first call can take about 10–15 s while the embedding model and Keewano respond.

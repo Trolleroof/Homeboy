@@ -25,6 +25,61 @@ ROOT = Path(__file__).resolve().parents[2]
 ACTIVE = ("planning", "awaiting_confirmation", "confirmed", "executing")
 PHONE = re.compile(r"\+[1-9]\d{7,14}\Z")
 SEND_TIMEOUT = 15
+INSIGHTS_TIMEOUT = 30
+# Questions about past runs. They are answered from Keewano history and never
+# reach the planner, so the robot is never asked to do anything to answer them.
+INSIGHT_WORDS = re.compile(
+    r"\b(stats?|statistics|history|logs?|telemetry|keewano|analytics|metrics|performance|perform(?:ing|ed)?|"
+    r"success(?:es| rate)?|fail(?:s|ed|ing|ures?)?|errors?|issues?|problems?|recent runs?|last runs?|report|"
+    r"how (?:is|are|did|has|have|was|were|does|do|often|many|well)|how's|why (?:did|does|is|was)|what happened)\b", re.I)
+
+
+def wants_insights(body):
+    return bool(INSIGHT_WORDS.search(body or ""))
+
+
+def insights_text(result, limit=1400):
+    """Plain-text Keewano summary for SMS or speech."""
+    lines = ["Homeboy run history from Keewano. Read-only; no motion requested."]
+    skills = result.get("skills") or []
+    if not skills:
+        lines.append("No approved taught skills yet.")
+    for item in skills:
+        k = item.get("keewano") or {}
+        score = item.get("video_score")
+        lines.append(f"{item.get('description') or item.get('skill_id')}" + (f" (video match {score:.2f})" if isinstance(score, (int, float)) else "") + ":")
+        if not k.get("available"):
+            lines.append("  History unavailable: " + str(k.get("reason", "Keewano not reachable")))
+            continue
+        summary, runs = k.get("summary") or {}, k.get("recent_runs") or []
+        if not runs:
+            lines.append("  No finished runs recorded yet.")
+        else:
+            counts = {}
+            for verdict in summary.get("last_verdicts", []):
+                counts[verdict] = counts.get(verdict, 0) + 1
+            rate = summary.get("success_rate")
+            lines.append(f"  Last {len(runs)} runs: " + ", ".join(f"{n} {v}" for v, n in counts.items())
+                         + (f" ({rate:.0%} success)" if rate is not None else "") + ".")
+            if summary.get("same_video_decided_runs"):
+                lines.append(f"  This video: {summary['same_video_success_rate']:.0%} of {summary['same_video_decided_runs']} decided runs.")
+            if summary.get("avg_max_tracking") is not None:
+                lines.append(f"  Tracking error avg {summary['avg_max_tracking']}, peak {summary['peak_max_tracking']} (stop at {summary.get('tracking_stop_at', 8)}).")
+            if summary.get("peak_motor_temp_c") is not None:
+                lines.append(f"  Peak motor temp {summary['peak_motor_temp_c']}C.")
+        policy = k.get("speed_policy")
+        if policy:
+            lines.append(f"  Next replay speed {policy['speed']:g} ({policy['policy']}).")
+        modes = k.get("failure_modes") or {}
+        top = list((modes.get("blocked_reasons") or {}).items())[:2] + list((modes.get("error_classes") or {}).items())[:2]
+        if top:
+            lines.append("  Top issues: " + ", ".join(f"{name} x{n}" for name, n in top) + ".")
+        failed = next((r for r in runs if r.get("verdict") != "success" and r.get("log")), None)
+        if failed:
+            trail = " > ".join(str(l["value"]) for l in failed["log"][-5:])
+            lines.append(f"  Last {failed['verdict']} run ({str(failed.get('at', ''))[:16]}): {trail}.")
+    text = "\n".join(lines)
+    return text if len(text) <= limit else text[:limit-3] + "..."
 
 
 def validate_configuration(number, allowed, result_url=""):
@@ -75,13 +130,14 @@ class Bridge:
         return await asyncio.to_thread(self._call, action, payload)
 
     def _call(self, action, payload):
-        if action not in ("status", "plan", "confirm_sms"):
+        if action not in ("status", "plan", "confirm_sms", "insights"):
             raise ValueError("SMS adapter cannot execute robot motion")
         request = urllib.request.Request(self.url+"/harness/"+action,
                     data=None if action == "status" else json.dumps(payload).encode(),
                     headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            # Insights query Keewano for up to three skills; still bounded, never motion.
+            with urllib.request.urlopen(request, timeout=INSIGHTS_TIMEOUT if action == "insights" else 5) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             try:
@@ -197,10 +253,14 @@ class Adapter:
                 await self.confirm(event_id, sender, body)
                 return
             if body.upper() == "HELP":
-                await self.reply(event_id, sender, "Text a taught task, e.g. 'Put the orange block in the bin'. Homeboy replies with a RUN token. A local operator must check the workcell before motion.")
+                await self.reply(event_id, sender, "Text a taught task, e.g. 'Put the orange block in the bin'. Homeboy replies with a RUN token. A local operator must check the workcell before motion. "
+                                 "Ask 'how is the orange block task doing?' or 'show logs' for run history and stats.")
                 return
             if not 1 <= len(body) <= 500:
                 await self.reply(event_id, sender, "Please send one taught task in 1–500 characters.")
+                return
+            if wants_insights(body):
+                await self.insights(event_id, sender, body)
                 return
             if self.state.active():
                 await self.reply(event_id, sender, "Homeboy already has a pending request. Confirm it or wait for it to finish/expire.")
@@ -226,6 +286,18 @@ class Adapter:
                 # request_id on poll. Never repeat a planning command.
                 self.state.event(request_id, "planning_acceptance_unknown", error_class=type(error).__name__)
                 await self.reply(request_id+":unknown", sender, "Homeboy's planner connection is unavailable. No motion was requested. Checking the request; please wait.", request_id)
+
+    async def insights(self, event_id, sender, body):
+        """Answer a stats/logs question from Keewano. Allowed while a request is
+        pending: it creates no request, plan or run."""
+        self.state.event(None, "insights_requested", dial_event_id=event_id)
+        try:
+            result = await asyncio.wait_for(self.bridge.call("insights", query=body), timeout=INSIGHTS_TIMEOUT+5)
+            text = insights_text(result)
+        except Exception as error:
+            self.state.event(None, "insights_unavailable", dial_event_id=event_id, error_class=type(error).__name__)
+            text = "Homeboy's run history is unavailable right now. No motion was requested."
+        await self.reply(event_id+":insights", sender, text)
 
     async def confirm(self, event_id, sender, body):
         match = re.fullmatch(r"RUN\s+([A-F0-9]{8})", body.upper())
