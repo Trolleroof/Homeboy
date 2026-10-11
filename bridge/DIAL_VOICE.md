@@ -9,7 +9,18 @@ clear, run it on the robot (`willow_run_plan`). It reports the vision-verified
 verdict through `willow_task_progress`, and `willow_stop` halts the robot
 immediately. The harness still requires an approved skill, a confident camera
 scene check and bounded replay. Set `DIAL_VOICE_EXECUTION=off` in
-`bridge/.env.local` to return to plan-only. The Context MCP checks Dial's static bearer credential plus the live
+`bridge/.env.local` to return to plan-only.
+
+Phone plans are always **direct plans**: `willow_plan_task` calls the harness's
+`plan_direct` action, which finds the closest saved take by EmbeddingGemma
+similarity (score ≥ 0.7, same block, color and goal) and answers in a few
+seconds without Codex. Unlike the dashboard's **Run it**, it never imports or
+approves a take, so the take must already be approved on the dashboard, and the
+camera scene check still runs before motion. The harness refuses Codex planning
+from `dial_voice`, and `willow_run_plan` sends `requested_by: dial_voice` so the
+harness will only start a direct plan this phone line requested. The pending
+phone plan appears in the dashboard's plan card with its match score; the
+operator can run it there too or press Stop at any time. The Context MCP checks Dial's static bearer credential plus the live
 inbound caller number and Dial number on every tool call. The only allowed
 caller is configured by `DIAL_VOICE_ALLOWED_CALLERS` in ignored
 `bridge/.env.local`.

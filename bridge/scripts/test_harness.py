@@ -567,6 +567,99 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(self.harness.catalog()[0]["approved"])
         self.assertEqual(self.harness.run["result"], "uncertain")  # verification is best-effort
 
+    def phone_plan(self, approved=True):
+        self.add_skill()
+        self.harness.plan = None
+        if not approved:
+            skill = self.harness.catalog()[0]
+            skill["approved"] = False
+            (Path(self.tmp.name)/"skill-2.json").write_text(json.dumps(skill))
+        return {"episode": 2, "description": "Pick and place the orange block in the bin", "score": .84, "video_sha256": None}
+
+    def test_phone_plan_direct_prepares_closest_take_without_moving(self):
+        candidate = self.phone_plan()
+        with patch.object(self.harness.memory, "find_recordings", return_value=[candidate]), \
+                patch.object(task_harness, "run_codex") as codex:
+            result = self.harness.command("plan_direct", {"prompt": "put the orange block in the bin", "source": "dial_voice", "request_id": "a"*32})
+        codex.assert_not_called()
+        plan = self.harness.plan
+        self.assertEqual(result["plan_id"], plan["id"])
+        self.assertEqual(result["score"], .84)
+        self.assertTrue(plan["direct"])
+        self.assertEqual((plan["source"], plan["request_id"], plan["phone_confirmed"]), ("dial_voice", "a"*32, True))
+        self.assertFalse(self.harness.active)
+        self.assertFalse(self.recorder.robot.bus.torque)
+        self.assertIsNone(self.recorder._autonomy)
+
+    def test_phone_plan_direct_never_approves_or_imports_a_take(self):
+        candidate = self.phone_plan(approved=False)
+        with patch.object(self.harness.memory, "find_recordings", return_value=[candidate]):
+            with self.assertRaisesRegex(ValueError, "approved on the dashboard"):
+                self.harness.command("plan_direct", {"prompt": "put the orange block in the bin", "source": "dial_voice", "request_id": "a"*32})
+        self.assertFalse(self.harness.catalog()[0]["approved"])
+        with patch.object(self.harness.memory, "find_recordings", return_value=[{**candidate, "episode": 7}]):
+            with self.assertRaisesRegex(ValueError, "imported and approved"):
+                self.harness.command("plan_direct", {"prompt": "put the orange block in the bin", "source": "dial_voice", "request_id": "a"*32})
+        self.assertEqual(len(self.harness.catalog()), 1)
+        self.assertIsNone(self.harness.plan)
+
+    def test_phone_plan_direct_requires_voice_source_and_request_id(self):
+        candidate = self.phone_plan()
+        with patch.object(self.harness.memory, "find_recordings", return_value=[candidate]):
+            for payload in ({}, {"source": "dial_voice"}, {"source": "dial_sms", "request_id": "a"*32}):
+                with self.assertRaisesRegex(ValueError, "Dial voice"):
+                    self.harness.command("plan_direct", {"prompt": "put the orange block in the bin", **payload})
+        self.assertIsNone(self.harness.plan)
+
+    def test_phone_cannot_codex_plan_or_run_a_non_direct_plan(self):
+        self.add_skill()
+        with self.assertRaisesRegex(ValueError, "plan_direct"):
+            self.harness.command("plan", {"prompt": "put the orange block in the bin", "source": "dial_voice", "request_id": "a"*32})
+        self.add_skill()
+        self.harness.plan.update(source="dial_voice", request_id="a"*32, phone_confirmed=True)
+        with self.assertRaisesRegex(ValueError, "only run a direct plan"):
+            self.harness.command("run", {"plan_id": "plan", "scene_confirmed": True, "requested_by": "dial_voice"})
+        # A direct plan the dashboard made with "Run it" is not the phone's either.
+        self.harness.plan.update(direct=True, source=None)
+        with self.assertRaisesRegex(ValueError, "only run a direct plan"):
+            self.harness.command("run", {"plan_id": "plan", "scene_confirmed": True, "requested_by": "dial_voice"})
+        self.assertFalse(self.harness.active)
+        self.assertFalse(self.recorder.robot.bus.torque)
+
+    def test_phone_direct_run_skips_codex_but_keeps_the_scene_check(self):
+        candidate = self.phone_plan()
+        self.loop_start()
+        responses = iter([({"match": True, "confidence": .95, "evidence": "Same cell"}, {}),
+                          ({"verdict": "success", "confidence": .95, "evidence": "Block in bin, released"}, {})])
+        with patch.object(self.harness.memory, "find_recordings", return_value=[candidate]), \
+                patch.object(task_harness, "run_codex") as codex, \
+                patch.object(task_harness, "local_model", side_effect=lambda *args: next(responses)) as vision, \
+                patch.object(self.harness.memory, "learn", return_value={"skill_id": "episode-2"}), \
+                patch.object(self.recorder, "start_autonomy", wraps=self.recorder.start_autonomy) as start:
+            plan_id = self.harness.command("plan_direct", {"prompt": "put the orange block in the bin", "source": "dial_voice", "request_id": "a"*32})["plan_id"]
+            self.harness.command("run", {"plan_id": plan_id, "scene_confirmed": True, "requested_by": "dial_voice"})
+            self.wait_job()
+        codex.assert_not_called()
+        start.assert_called_once()
+        self.assertEqual(vision.call_count, 2)
+        self.assertIn("checking_scene", [e["event"] for e in self.harness.run["events"]])
+        self.assertEqual((self.harness.run["request_id"], self.harness.run["plan_id"]), ("a"*32, plan_id))
+        self.assertEqual(self.harness.run["execution_plan"]["source"], "dial_voice")
+        self.assertEqual(self.harness.run["result"], "success")
+        self.assertIsNone(self.harness.plan)
+
+    def test_phone_direct_run_blocks_on_a_scene_mismatch_without_moving(self):
+        candidate = self.phone_plan()
+        with patch.object(self.harness.memory, "find_recordings", return_value=[candidate]), \
+                patch.object(task_harness, "local_model", return_value=({"match": False, "confidence": .95, "evidence": "Block moved"}, {})), \
+                patch.object(self.recorder, "start_autonomy") as start:
+            plan_id = self.harness.command("plan_direct", {"prompt": "put the orange block in the bin", "source": "dial_voice", "request_id": "a"*32})["plan_id"]
+            self.harness.command("run", {"plan_id": plan_id, "scene_confirmed": True, "requested_by": "dial_voice"})
+            self.wait_job()
+        start.assert_not_called()
+        self.assertEqual(self.harness.run["result"], "blocked")
+        self.assertFalse(self.recorder.robot.bus.torque)
+
     def test_copied_plan_uses_measured_follower_not_leader_commands(self):
         self.add_skill()
         original = self.harness.catalog()[0]

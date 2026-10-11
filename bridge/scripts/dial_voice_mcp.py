@@ -46,9 +46,10 @@ if not BRIDGE.startswith(("http://127.0.0.1:", "http://localhost:")):
 app = FastMCP("Homeboy robot harness", instructions=(
     "You are Homeboy's phone interface. Only help callers whose live Dial caller-number header is allowlisted. "
     "Call willow_status before describing robot or harness readiness. For block placement requests, "
-    "call willow_plan_task, then poll willow_task_progress every few seconds until planning finishes (it usually "
-    "takes 20-60 seconds; tell the caller you're working on it). When a plan is ready, read back what the robot will "
-    "do and ask the caller to confirm the workcell is set up like the demonstration and the arm's path is clear. "
+    "call willow_plan_task. It answers within a few seconds with the closest saved take the robot will replay; there "
+    "is no other kind of plan. Read back the take's task and match score and ask the caller to confirm the workcell is "
+    "set up like the demonstration and the arm's path is clear. If it refuses, explain why (no close enough take, "
+    "take not yet approved on the dashboard, different block or goal) and do not retry with a reworded task. "
     "Only after an explicit yes, call willow_run_plan with that plan_id and workcell_clear=true. Then poll "
     "willow_task_progress and report the verified verdict; never claim success before the harness reports it. "
     "If the caller says stop, wait, cancel or anything urgent while the robot moves, call willow_stop immediately. "
@@ -110,18 +111,24 @@ def willow_status(ctx: Context) -> dict:
 
 @app.tool()
 def willow_plan_task(task: str, ctx: Context) -> dict:
-    """Ask Homeboy to plan a taught task, without starting motion. Requires a supported color block placement and an approved skill."""
+    """Find the closest saved take for a block placement and prepare it as a direct plan, without starting motion.
+    The take must already be approved on the dashboard and describe the same block, color and goal."""
     number = caller(ctx)
     if not isinstance(task, str) or not 1 <= len(task.strip()) <= 300:
         raise ValueError("Describe one task in 1 to 300 characters.")
     request_id = uuid.uuid4().hex
-    result = bridge("plan", {"prompt": task, "source": "dial_voice", "request_id": request_id})
-    audit("task_plan_requested", number, request_id=request_id, accepted=result.get("ok") is True)
+    # Embedding retrieval and copying the measured take can take several seconds.
+    result = bridge("plan_direct", {"prompt": task, "source": "dial_voice", "request_id": request_id}, timeout=30)
+    audit("task_plan_requested", number, request_id=request_id, accepted=result.get("ok") is True,
+          plan_id=result.get("plan_id"), score=result.get("score"))
     if not result.get("ok"):
         return {"accepted": False, "error": result.get("error", "Homeboy refused the plan."),
                 "robot_moved": False}
-    return {"accepted": True, "request_id": request_id, "planning_run_id": result.get("run_id"),
-            "robot_moved": False, "next_step": "Tell the caller Homeboy is planning, then poll willow_task_progress until a plan is ready."}
+    return {"accepted": True, "request_id": request_id, "plan_id": result["plan_id"], "robot_moved": False,
+            "saved_take": result.get("description"), "match_score": round(result.get("score", 0), 2),
+            "duration_s": result.get("duration"), "speed": result.get("speed"), "expires_in_s": 300,
+            "next_step": "Read back the saved take and ask the caller to confirm the workcell matches the demo and the path is clear. "
+                         "Only after an explicit yes, call willow_run_plan with this plan_id and workcell_clear=true."}
 
 @app.tool()
 def willow_task_progress(ctx: Context) -> dict:
@@ -141,6 +148,8 @@ def willow_task_progress(ctx: Context) -> dict:
            "phone_execution_enabled": EXECUTION}
     if plan:
         out["plan_ready"] = {"plan_id": plan["id"], "task": plan.get("description"), "duration_s": plan.get("duration"),
+                             "direct": plan.get("direct") is True, "match_score": (plan.get("retrieval") or {}).get("score"),
+                             "runnable_from_phone": plan.get("direct") is True and plan.get("source") == "dial_voice",
                              "speed": plan.get("speed"), "reason": plan.get("reason"),
                              "from_this_phone_line": plan.get("source") == "dial_voice",
                              "expires_in_s": max(0, round(300-(datetime.now(timezone.utc).timestamp()-plan.get("at", 0))))}
@@ -157,12 +166,13 @@ def willow_run_plan(plan_id: str, workcell_clear: bool, ctx: Context) -> dict:
     if workcell_clear is not True:
         return {"started": False, "robot_moved": False, "error": "Ask the caller to confirm the workcell is set up and the path is clear first."}
     if not isinstance(plan_id, str) or not re.fullmatch(r"[a-f0-9]{32}", plan_id):
-        raise ValueError("Use the plan_id from willow_task_progress.")
+        raise ValueError("Use the plan_id from willow_plan_task or willow_task_progress.")
     plan = bridge("status").get("plan") or {}
-    if plan.get("id") != plan_id or plan.get("source") != "dial_voice":
+    if plan.get("id") != plan_id or plan.get("source") != "dial_voice" or plan.get("direct") is not True:
         audit("task_run_requested", number, plan_id=plan_id, accepted=False)
-        return {"started": False, "robot_moved": False, "error": "That plan is not the current phone plan; it may have expired or been replaced. Plan again."}
-    result = bridge("run", {"plan_id": plan_id, "scene_confirmed": True})
+        return {"started": False, "robot_moved": False, "error": "That plan is not the current direct phone plan; it may have expired or been replaced. Plan again."}
+    # requested_by makes the harness itself refuse anything but this phone's direct plan.
+    result = bridge("run", {"plan_id": plan_id, "scene_confirmed": True, "requested_by": "dial_voice"})
     audit("task_run_requested", number, plan_id=plan_id, request_id=plan.get("request_id"), accepted=result.get("ok") is True)
     if not result.get("ok"):
         return {"started": False, "robot_moved": False, "error": result.get("error", "Homeboy refused to run the plan.")}
