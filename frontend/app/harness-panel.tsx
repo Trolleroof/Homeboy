@@ -9,7 +9,7 @@ type Harness = {
   active: boolean; model: string; model_ready: boolean; vision_model: string; vision_ready: boolean; memory: { backend: string; experiences: number; demonstrations: number }; skills: Skill[];
   motors: { positions: Record<string, number>; age_s: number };
   motion: { active: boolean; elapsed_s: number; duration_s: number | null };
-  plan: { id: string; description: string; reason: string; duration: number; start_pose: Record<string, number>; source?: string; sms_confirmed?: boolean } | null;
+  plan: { id: string; description: string; reason: string; duration: number; start_pose: Record<string, number>; source?: string; sms_confirmed?: boolean; speed?: number; policy?: { policy: string; reason: string; success_rate: number | null } } | null;
   run: { id: string; state: string; local_calls: number; codex_calls: number; result: string | null; events: { event: string; at: number; error?: string; reason?: string; evidence?: string; tool?: string; result?: unknown; arguments?: unknown; reply?: string; usage?: { total: { inputTokens: number; outputTokens: number; cachedInputTokens: number } } }[]; verification?: { evidence: string; confidence: number } } | null;
 };
 
@@ -75,6 +75,7 @@ export default function HarnessPanel() {
     {status?.plan && <div className="harness-plan">
       <strong>{status.plan.description}</strong><p>{status.plan.reason}</p>
       <p>One bounded routine · approximately {Math.ceil(status.plan.duration)} seconds · plan expires in 5 minutes.</p>
+      {status.plan.policy && <p>Replay speed {status.plan.speed} units/s from Keewano run history: {status.plan.policy.reason}</p>}
       {status.plan.source === "dial_sms" && <p role="status">{awaitingSMS ? "Waiting for the customer's RUN confirmation by text." : "Customer confirmed by text. Check the workcell below before running."}</p>}
       <details><summary>Align the follower to its starting pose</summary><div className="motor-grid">{Object.entries(status.plan.start_pose).map(([joint, value]) => <span key={joint}>{joint.replace(".pos", "")}<b>{value.toFixed(1)}</b></span>)}</div><p>Use the taught starting pose. The controller refuses a difference above 5 normalized units.</p></details>
       <label className="harness-check"><input type="checkbox" checked={confirmed} onChange={e => setConfirmedPlanId(e.target.checked ? status.plan!.id : "")} />The block, bin and camera are in the taught positions; the path is clear and I am at the stop.</label>

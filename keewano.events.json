@@ -1,0 +1,136 @@
+{
+  "events": [
+    {
+      "eventName": "RunStarted",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "AgentKind",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "PromptIntent",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "RunCompleted",
+      "eventValueType": "bool"
+    },
+    {
+      "eventName": "RunDurationSec",
+      "eventValueType": "uint"
+    },
+    {
+      "eventName": "RetrievalQueried",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "RetrievalTopScore",
+      "eventValueType": "uint"
+    },
+    {
+      "eventName": "RetrievalMatched",
+      "eventValueType": "bool"
+    },
+    {
+      "eventName": "SkillSelected",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "ApprovalRequested",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "ApprovalGranted",
+      "eventValueType": "bool"
+    },
+    {
+      "eventName": "MotionExecuted",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "MotionSucceeded",
+      "eventValueType": "bool"
+    },
+    {
+      "eventName": "SafetyStop",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "ToolCalled",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "ToolSucceeded",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "ToolFailed",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "ErrorClass",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "StepLatencyMs",
+      "eventValueType": "uint"
+    },
+    {
+      "eventName": "TurnEnded",
+      "eventValueType": "uint"
+    },
+    {
+      "eventName": "TokensUsed",
+      "eventValueType": "uint"
+    },
+    {
+      "eventName": "LlmCost",
+      "eventValueType": "price_usd_cent"
+    },
+    {
+      "eventName": "HarnessEvent",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "MotionHash",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "ReplaySpeedTenths",
+      "eventValueType": "uint"
+    },
+    {
+      "eventName": "MotionVerdict",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "MaxTrackingTenths",
+      "eventValueType": "uint"
+    },
+    {
+      "eventName": "MaxMotorTempC",
+      "eventValueType": "uint"
+    },
+    {
+      "eventName": "BlockedReason",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "RequestSource",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "SpeedPolicy",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "HistorySuccessPct",
+      "eventValueType": "uint"
+    },
+    {
+      "eventName": "VerdictConfidencePct",
+      "eventValueType": "uint"
+    }
+  ]
+}
