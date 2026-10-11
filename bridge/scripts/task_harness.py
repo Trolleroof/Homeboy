@@ -66,17 +66,30 @@ def task_contract(text):
     Novel tasks require teaching and extending this verified vocabulary first.
     """
     words = re.findall(r"[a-z]+|\d+", text.lower())
-    allowed = set("please can could would will you robot homeboy the a an my our your it now then and to into in on onto at up down back pick pickup lift grab take get put place set drop move carry transfer block cube orange red blue green yellow black white pink purple brown bin basket container tray table tabletop again do task for me thanks thank with gripper hold held for sec secs second seconds after".split())
+    allowed = set("please can could would will you robot homeboy the a an my our your it now then and to into in on onto at up down back pick pickup lift grab take get put place set drop move carry transfer block cube orange red blue green yellow black white pink purple brown bin basket container tray bowl box cup table tabletop again do task for me thanks thank with gripper hold held for sec secs second seconds after".split())
     if not words or any(word not in allowed and not word.isdigit() for word in words):
         return None
     tokens = set(words)
     if not tokens.intersection({"block", "cube"}):
         return None
-    colors = tokens.intersection({"orange", "red", "blue", "green", "yellow", "black", "white", "pink", "purple", "brown"})
-    if len(colors) > 1:
+    palette = {"orange", "red", "blue", "green", "yellow", "black", "white", "pink", "purple", "brown"}
+    containers = {"bin", "basket", "container", "tray", "bowl", "box", "cup"}
+    # A color names the block or the container it directly precedes; any other
+    # color word (or two different block colors) is ambiguous and refused.
+    colors, bin_colors = set(), set()
+    for i, word in enumerate(words):
+        if word in palette:
+            following = words[i+1] if i+1 < len(words) else ""
+            if following in ("block", "cube"):
+                colors.add(word)
+            elif following in containers:
+                bin_colors.add(word)
+            else:
+                return None
+    if len(colors) > 1 or len(bin_colors) > 1:
         return None
     placing = bool(tokens.intersection({"put", "place", "set", "drop", "move", "carry", "transfer"}))
-    bin_goal = bool(tokens.intersection({"bin", "basket", "container", "tray"}))
+    bin_goal = bool(tokens.intersection(containers))
     table_goal = bool(tokens.intersection({"table", "tabletop", "down"}))
     if bin_goal and table_goal:
         return None
@@ -87,7 +100,10 @@ def task_contract(text):
         action = "pick_place"
     else:
         return None
-    return {"object": "block", "color": next(iter(colors)) if colors else None, "action": action, "destination": destination}
+    contract = {"object": "block", "color": next(iter(colors)) if colors else None, "action": action, "destination": destination}
+    if bin_colors:
+        contract["destination_color"] = next(iter(bin_colors))
+    return contract
 
 
 def local_model(prompt, schema, images=()):

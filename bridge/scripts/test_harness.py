@@ -391,6 +391,12 @@ class HarnessTests(unittest.TestCase):
         self.assertNotEqual(known, task_contract("Place the orange block in the bin"))
         self.assertNotEqual(known, task_contract("Pick up the blue block and put it down"))
 
+    def test_task_contract_separates_block_color_from_container_color(self):
+        contract = task_contract("pick up the green block and move it to the orange bowl")
+        self.assertEqual(contract, {"object": "block", "color": "green", "action": "pick_place",
+                                    "destination": "bin", "destination_color": "orange"})
+        self.assertIsNone(task_contract("pick up the green orange block and put it down"))
+
     def test_plain_block_hold_then_drop_task_matches_saved_description(self):
         requested = task_contract("pick up the block with the gripper, hold it for 3 seconds, and then drop it down")
         taught = task_contract("pick up the block with the gripper, hold it for 3 seconds, and then drop it down")

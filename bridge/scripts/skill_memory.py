@@ -40,7 +40,8 @@ def contracts_compatible(requested, taught):
     for key in ("object", "action", "destination"):
         if requested.get(key) != taught.get(key):
             return False
-    return requested.get("color") is None or requested.get("color") == taught.get("color")
+    return all(requested.get(key) is None or requested.get(key) == taught.get(key)
+               for key in ("color", "destination_color"))
 
 
 class SkillMemory:

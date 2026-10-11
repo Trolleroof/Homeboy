@@ -46,8 +46,8 @@ class MotionProgram:
         self.frames = frames
         self.times = times
         self.duration = self.times[-1]
-        if self.duration > 180:
-            raise ValueError("Skill exceeds the 180-second execution budget after speed limiting")
+        if self.duration > 300:
+            raise ValueError("Skill exceeds the 300-second execution budget after speed limiting")
         self.started = None
         self.last_tick = None
         self.last_target = None
