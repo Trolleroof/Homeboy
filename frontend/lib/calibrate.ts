@@ -1,5 +1,6 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { armLease } from "./arm-lease";
 import { config, root, recorderURL, status as recorderStatus, stop } from "./robot-bridge";
@@ -68,7 +69,9 @@ export async function start(role: Role) {
     const prefix = role === "leader" ? "teleop" : "robot";
     const args = [`--${prefix}.type=so101_${role}`, `--${prefix}.port=${port}`, `--${prefix}.id=${role}`];
     Object.assign(state, { role, running: true, phase: "starting", joints: [], savedTo: "", error: "", log: [], buffer: "", command: `${bin} ${args.join(" ")}` });
-    const child = spawn(bin, args, { cwd: root, env: { ...process.env, PYTHONUNBUFFERED: "1" }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(bin, args, { cwd: root, env: { ...process.env,
+      HF_LEROBOT_CALIBRATION: path.join(os.homedir(), ".cache/huggingface/lerobot/calibration"),
+      PYTHONUNBUFFERED: "1" }, stdio: ["pipe", "pipe", "pipe"] });
     state.child = child;
     child.stdout?.on("data", (data: Buffer) => consume(data.toString()));
     child.stderr?.on("data", (data: Buffer) => { state.log = [...state.log, ...data.toString().split("\n").filter(Boolean)].slice(-60); });

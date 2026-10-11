@@ -1,5 +1,6 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { armLease } from "./arm-lease";
 
@@ -91,12 +92,14 @@ export async function start(task: string) {
     catch (error) { if ((error as Error).message.includes("already owns")) throw error; }
     const python = process.env.HOMEBOY_PYTHON ?? "python3";
     const args = [path.join(root, "scripts/record_server.py"), "--port", "8621", "--repo-id", "homeboy/speedhacks-wrist-v1", "--task", task,
-      "--robot-port", settings.robotPort, "--teleop-port", settings.teleopPort, "--fps", "30", "--sync-seconds", "2", "--auto-estop", "--commit-seconds", "120"];
+      "--robot-port", settings.robotPort, "--teleop-port", settings.teleopPort, "--fps", "30", "--sync-seconds", "2", "--commit-seconds", "120"];
     for (const camera of settings.cameras) args.push("--camera", `${camera.name}=${camera.index}`);
     if (offline) args.push("--offline");
     fs.mkdirSync(path.join(root, "logs"), { recursive: true });
     state.log = [];
-    const child = spawn(python, args, { cwd: root, env: { ...process.env, PYTHONUNBUFFERED: "1" }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(python, args, { cwd: root, env: { ...process.env,
+      HF_LEROBOT_CALIBRATION: path.join(os.homedir(), ".cache/huggingface/lerobot/calibration"),
+      PYTHONUNBUFFERED: "1" }, stdio: ["pipe", "pipe", "pipe"] });
     state.child = child;
     if (child.pid) fs.writeFileSync(path.join(root, "logs/recorder.pid"), String(child.pid));
     const append = (data: Buffer | string) => {

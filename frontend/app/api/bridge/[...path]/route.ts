@@ -64,7 +64,7 @@ async function handle(request: Request, context: Context) {
     }
     const response = await fetch(`${recorderURL}/${endpoint}`, { method: request.method,
       headers: { "Content-Type": "application/json" }, body,
-      cache: "no-store", signal: stream ? request.signal : AbortSignal.timeout(15_000) });
+      cache: "no-store", signal: stream ? request.signal : AbortSignal.timeout(group === "recorder" && action === "sync" ? 120_000 : 15_000) });
     return new Response(response.body, { status: response.status, headers: { "Content-Type": response.headers.get("content-type") ?? "application/json", "Cache-Control": "no-store" } });
   } catch (error) {
     const offline = { ok: false, offline: true, error: (error as Error).message, message: "Recorder is offline. Start teaching to connect the arms.", ...status() };

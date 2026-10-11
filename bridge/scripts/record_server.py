@@ -23,10 +23,9 @@ Four things run alongside the recording loop:
     the delta is published, but nothing is driven, so bringing the daemon up
     never moves the follower. `POST /engage` hands the follower to the leader
     once the two agree; `POST /disengage` lets go again.
-*   **Tracking delta.** Every tick compares the leader's commanded angle against
-    the follower's measured angle, per joint. A large delta means the follower is
-    fighting something (or is about to). With `--auto-estop` it kills the arms by
-    itself.
+*   **Tracking delta.** The display compares leader and follower positions.
+    Teleop forwards the live leader pose. Alignment is informational during
+    motion; a tracking gap does not pause teleop or cut torque.
 *   **Calibration.** The LeRobot routine blocks on `input()`; this one is a state
     machine stepped by the loop, so the phases are buttons in the browser.
 
@@ -90,6 +89,7 @@ WS_PERIOD = 0.1
 DEFAULT_REST_SECONDS = 2.0
 DEFAULT_START_SECONDS = 0.8
 DEFAULT_SYNC_SECONDS = 0.8
+MAX_SYNC_SPEED = 6.0  # Calibrated action units per second; sync takes longer for large gaps.
 TRAINING_TASK = "pick up the yellow sponge"
 CAMERAS_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "cameras.json"
 
@@ -159,6 +159,13 @@ def _ease_in_out(t: float) -> float:
 def _ease_out_cubic(t: float) -> float:
     """0..1 in, 0..1 out: fast start, soft arrival instead of a dead stop."""
     return 1.0 - (1.0 - t) ** 3
+
+
+def sync_duration(max_gap: float, minimum_seconds: float, max_speed: float = MAX_SYNC_SPEED) -> float:
+    """Duration for cosine easing that caps peak joint speed at max_speed."""
+    if not all(math.isfinite(value) for value in (max_gap, minimum_seconds, max_speed)) or max_gap < 0 or minimum_seconds < 0 or max_speed <= 0:
+        raise ValueError("Sync gap and minimum duration must be nonnegative; max speed must be positive")
+    return max(minimum_seconds, max_gap * math.pi / (2 * max_speed))
 
 
 def safe_build_dataset_frame(
@@ -359,12 +366,10 @@ class Recorder:
         *,
         camera_meta: dict[str, int] | None = None,
         delta_limit: float = 25.0,
-        auto_estop: bool = False,
         engage_on_start: bool = False,
         rest_seconds: float = DEFAULT_REST_SECONDS,
         start_seconds: float = DEFAULT_START_SECONDS,
         sync_seconds: float = DEFAULT_SYNC_SECONDS,
-        delta_grace: int = 5,
         stream_fps: float = 10.0,
         stream_quality: int = 70,
     ):
@@ -416,12 +421,9 @@ class Recorder:
         self._engage_pending = engage_on_start
 
         self.delta_limit = delta_limit
-        self.auto_estop = auto_estop
         self.rest_seconds = max(0.0, rest_seconds)
         self.start_seconds = max(0.0, start_seconds)
         self.sync_seconds = max(0.0, sync_seconds)
-        self.delta_grace = max(1, delta_grace)
-        self._over_ticks = 0
         self._delta: dict[str, Any] = {"joints": {}, "max": 0.0, "max_joint": None, "over": False}
 
         self.calib: Calibration | None = None
@@ -608,10 +610,12 @@ class Recorder:
             with self.lock:
                 if self.state != IDLE:
                     return {"ok": False, "error": f"sync arms is only available while idle, not {self.state}"}
-                if self.engaged:
-                    return {"ok": False, "error": "disengage teleop before syncing arms"}
                 if self.estop or self.calib is not None or self._autonomy is not None or self._command is not None:
                     return {"ok": False, "error": "sync arms is unavailable during e-stop, calibration, or another motion"}
+                for role in ("teleop", "follower"):
+                    hardware = self._hardware.get(role, {})
+                    if hardware.get("motors_ok") != 6:
+                        return {"ok": False, "error": f"{role} must report all six healthy motors before syncing ({hardware.get('motors_ok', 0)}/6 responding)"}
                 joint_readings = self._delta.get("joints") or {}
                 required_joints = {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"}
                 if (time.time() - min(self._last_robot_pos_at, self._last_teleop_action_at) > 0.5
@@ -722,6 +726,10 @@ class Recorder:
         with self.lock:
             if not self.estop:
                 return {"ok": False, "error": "not stopped"}
+            follower_motors = self._hardware.get("follower", {}).get("motors_ok", 0)
+            teleop_motors = self._hardware.get("teleop", {}).get("motors_ok", 0)
+            if follower_motors != 6 or teleop_motors != 6:
+                return {"ok": False, "error": f"cannot re-arm: follower {follower_motors}/6 motors and leader {teleop_motors}/6 motors responding; inspect the reported motor fault first"}
 
         try:
             with self.hw_lock:
@@ -735,7 +743,6 @@ class Recorder:
             self.estop_reason = ""
             self.state = IDLE
             self.last_message = "re-armed"
-        self._over_ticks = 0
         log.info("re-armed")
         return {"ok": True}
 
@@ -755,14 +762,18 @@ class Recorder:
                 return {"ok": False, "error": "fresh readings from both arms are required before engaging teleop"}
             if engaged and self._delta.get("max", 999) > self.delta_limit and not force:
                 return {"ok": False, "error": "Align the leader and follower before engaging teleop"}
-            if engaged == self.engaged:
+            resync = engaged and force and self.engaged
+            if engaged == self.engaged and not resync:
                 return {"ok": True, "already": True}
 
         try:
             with self.hw_lock:
                 if engaged:
                     configure_at_measured_pose(self.robot)
-                    self._engage_ramp()
+                    if force:
+                        self._sync_to_leader()
+                    else:
+                        self._engage_ramp()
                 else:
                     self._rest_and_release()
         except Exception as err:  # noqa: BLE001
@@ -854,15 +865,35 @@ class Recorder:
                 self._control_ready = False
             self._kill_torque()
 
-    def _engage_ramp(self) -> None:
-        """Ease through the ready pose, then synchronize to the leader."""
-        self._ramp_to(START_POSE, self.start_seconds)
+    def _leader_pose(self) -> dict[str, float]:
         leader_action = self.teleop.get_action()
-        leader_pose = {
+        return {
             key.removesuffix(".pos"): float(value)
             for key, value in leader_action.items()
             if key.endswith(".pos") and isinstance(value, (int, float, np.number))
         }
+
+    def _sync_to_leader(self) -> None:
+        """Ease directly to the live leader pose, with a distance-based speed cap."""
+        leader_pose = self._leader_pose()
+        observation = self._read_robot_observation()
+        follower_pose = {key.removesuffix(".pos"): float(value)
+                         for key, value in observation.items()
+                         if key.endswith(".pos") and isinstance(value, (int, float, np.number))}
+        joints = set(leader_pose) & set(follower_pose)
+        if not joints or len(joints) != 6:
+            raise RuntimeError("fresh readings for all six leader and follower joints are required")
+        max_gap = max(abs(leader_pose[joint] - follower_pose[joint]) for joint in joints)
+        # Cosine easing peaks at pi/2 times its average speed. Extend the ramp
+        # so even the largest joint gap stays under MAX_SYNC_SPEED.
+        seconds = sync_duration(max_gap, self.sync_seconds)
+        log.info("syncing follower to leader over %.1fs (largest joint gap %.1f)", seconds, max_gap)
+        self._ramp_to(leader_pose, seconds)
+
+    def _engage_ramp(self) -> None:
+        """Ease through the ready pose, then synchronize to the leader."""
+        self._ramp_to(START_POSE, self.start_seconds)
+        leader_pose = self._leader_pose()
         if leader_pose:
             self._ramp_to(leader_pose, self.sync_seconds)
 
@@ -915,7 +946,6 @@ class Recorder:
                     "engaged": self.estop,
                     "reason": self.estop_reason,
                     "since_s": (now - self.estop_at) if self.estop else 0.0,
-                    "auto": self.auto_estop,
                 },
                 "delta": dict(self._delta),
                 "teleop": {
@@ -923,7 +953,7 @@ class Recorder:
                     # Same number the delta panel already shows, restated as the
                     # yes/no the Engage button needs. A delta with no joints in
                     # it is not "aligned", it is "not measured yet".
-                    "ready": now - min(self._last_robot_pos_at, self._last_teleop_action_at) < 0.5 and bool(self._delta.get("joints")) and self._delta.get("max", 0.0) <= self.delta_limit,
+                    "ready": not self.estop and now - min(self._last_robot_pos_at, self._last_teleop_action_at) < 0.5 and bool(self._delta.get("joints")) and self._delta.get("max", 0.0) <= self.delta_limit,
                     "record_ready": self.engaged and self._control_ready,
                     "worst": self._delta.get("max", 0.0),
                     "worst_joint": self._delta.get("max_joint"),
@@ -1128,7 +1158,10 @@ class Recorder:
             with self.hw_lock:
                 observation = self._read_robot_observation()
                 action = self._read_teleop_action()
-                sent = self.robot.send_action(action) if (self.engaged and action) else None
+                self._update_delta(action, observation)
+                sent = None
+                if self.engaged and not self.estop and action:
+                    sent = self.robot.send_action(action)
         except Exception as err:  # noqa: BLE001
             log.warning("teleop read/write failed, skipping this tick: %s", err)
             if self.state == RECORDING:
@@ -1137,9 +1170,8 @@ class Recorder:
             if self.engaged and time.time() - min(self._last_robot_pos_at, self._last_teleop_action_at) > 0.5:
                 self.emergency_stop("Joint readings are stale")
             return None, None
-        self._update_delta(action, observation)
         with self.lock:
-            self._control_ready = bool(sent) and bool(self._delta.get("joints")) and self._delta.get("max", 0.0) <= self.delta_limit
+            self._control_ready = bool(sent) and not self.estop and bool(self._delta.get("joints"))
         return observation, (sent if sent is not None else action)
 
     def _engage_on_start(self) -> None:
@@ -1415,13 +1447,7 @@ class Recorder:
     # -- tracking delta -------------------------------------------------
 
     def _update_delta(self, action: dict[str, Any] | None, observation: dict[str, Any] | None) -> None:
-        """Per-joint |leader commanded − follower measured|.
-
-        Both sides are in the same normalised units (−100..100, or 0..100 for the
-        gripper), so one limit covers every joint. A delta that stays large is
-        the follower failing to reach where it was told to go: it is jammed, is
-        pushing on something, or has lost power.
-        """
+        """Display alignment in calibrated action units without gating live teleop."""
         if not action or not observation:
             return
         joints: dict[str, Any] = {}
@@ -1442,7 +1468,6 @@ class Recorder:
                 worst, worst_joint = delta, key[: -len(".pos")]
 
         over = worst > self.delta_limit
-        self._over_ticks = self._over_ticks + 1 if over else 0
         with self.lock:
             if self.state == RECORDING:
                 self._quality["max_tracking_delta"] = max(self._quality.get("max_tracking_delta", 0.0), round(worst, 2))
@@ -1452,11 +1477,7 @@ class Recorder:
                 "max_joint": worst_joint,
                 "limit": self.delta_limit,
                 "over": over,
-                "over_ticks": self._over_ticks,
             }
-
-        if self.auto_estop and self.engaged and not self.estop and self._over_ticks >= self.delta_grace:
-            self.emergency_stop(f"tracking error {worst:.1f} > {self.delta_limit:.0f} on {worst_joint}")
 
     # -- camera streams -------------------------------------------------
 
@@ -2014,19 +2035,7 @@ def main() -> int:
         "--delta-limit",
         type=float,
         default=25.0,
-        help="Leader/follower disagreement (normalised units) the dashboard flags as a tracking fault.",
-    )
-    parser.add_argument(
-        "--auto-estop",
-        action="store_true",
-        help="Cut torque automatically when the delta stays over the limit. Off by default: "
-        "a follower can legitimately lag the leader through a fast move.",
-    )
-    parser.add_argument(
-        "--delta-grace",
-        type=int,
-        default=5,
-        help="Consecutive ticks over the limit before --auto-estop fires.",
+        help="Initial alignment limit in calibrated action units; live teleop is not stopped by this gap.",
     )
     parser.add_argument(
         "--engage-on-start",
@@ -2084,7 +2093,7 @@ def main() -> int:
                 release_all_torque(robot.bus)
             for camera in robot.cameras.values():
                 camera.connect()
-            teleop.connect()
+            teleop.connect(calibrate=False)
 
         features = {
             **hw_to_dataset_features(robot.observation_features, OBS_STR, use_video=True),
@@ -2140,12 +2149,10 @@ def main() -> int:
             args.flush_every,
             camera_meta=camera_meta,
             delta_limit=args.delta_limit,
-            auto_estop=args.auto_estop,
             engage_on_start=args.engage_on_start,
             rest_seconds=args.rest_seconds,
             start_seconds=args.start_seconds,
             sync_seconds=args.sync_seconds,
-            delta_grace=args.delta_grace,
             stream_fps=args.stream_fps,
             stream_quality=args.stream_quality,
         )

@@ -228,11 +228,7 @@ export default function Home() {
 
   async function syncArms() {
     if (!syncAvailable) return;
-    const approved = window.confirm(
-      "Sync arms will move the follower smoothly to the leader's current pose over about 2 seconds, then leave teleop engaged. Clear the follower's path and keep a hand near STOP. Continue?",
-    );
-    if (!approved) return;
-    setBusy(true); setError(""); setNotice("Syncing the follower to the leader over about 2 seconds…");
+    setBusy(true); setError(""); setNotice("Syncing the follower slowly; large gaps can take several seconds…");
     try {
       await call("recorder/sync", { confirmed: true });
       const current = await waitFor((next) => next.teleop?.engaged === true && next.teleop?.ready === true, 10_000);
@@ -344,7 +340,14 @@ export default function Home() {
   const bridgeOnline = !status.offline;
   const preflightReady = bridgeOnline && status.teleop?.ready === true && status.data_quality?.ready === true;
   const linked = preflightReady && status.teleop?.engaged === true;
-  const syncAvailable = bridgeOnline && status.state === "idle" && !status.teleop?.engaged && !status.estop?.engaged
+  const syncHint = status.estop?.engaged
+    ? "Emergency stop is active. Inspect the arm fault before resetting it."
+    : (status.hardware?.teleop?.motors_ok ?? 0) !== 6 || (status.hardware?.follower?.motors_ok ?? 0) !== 6
+      ? `Sync locked: leader ${status.hardware?.teleop?.motors_ok ?? 0}/6, follower ${status.hardware?.follower?.motors_ok ?? 0}/6 motors responding. Inspect the fault before syncing.`
+      : typeof status.teleop?.worst === "number"
+        ? `Largest gap ${status.teleop.worst.toFixed(1)} / 25. Sync moves the follower slowly; large gaps take longer.`
+        : "Both arms need fresh readings before syncing.";
+  const syncAvailable = bridgeOnline && status.state === "idle" && !status.estop?.engaged
     && !status.calibration && (status.hardware?.teleop?.motors_ok ?? 0) === 6
     && (status.hardware?.follower?.motors_ok ?? 0) === 6 && Object.keys(status.delta?.joints ?? {}).length === 6;
   const shortTime = `${Math.floor(status.elapsed_s / 60).toString().padStart(2, "0")}:${Math.floor(status.elapsed_s % 60).toString().padStart(2, "0")}`;
@@ -364,7 +367,7 @@ export default function Home() {
           <a className="nav-item" href="#library"><span className="nav-icon">▧</span>Saved<span className="nav-count">{library.length}</span></a>
           <button type="button" className="nav-item calibration-nav" disabled={busy} onClick={() => setCalibrationOpen(true)}><span className="nav-icon" aria-hidden="true">↻</span>Calibrate</button>
         </nav>
-        <button className="rail-sync-button" type="button" disabled={!syncAvailable || busy} onClick={() => void syncArms()} title={syncAvailable ? "Move follower to the leader's current pose and engage teleop" : "Sync is available when both arms are connected, idle, disengaged, and reporting six fresh joints"}>
+        <button className="rail-sync-button" type="button" disabled={!syncAvailable || busy} onClick={() => void syncArms()} title={syncAvailable ? "Move follower to the leader's current pose and engage teleop" : "Sync is available when both arms are connected, idle, and reporting six fresh joints"}>
           <span aria-hidden="true">↻</span><b>{busy && notice.startsWith("Syncing") ? "Syncing arms…" : "Sync arms"}</b>
         </button>
         <div className="rail-spacer" />
@@ -397,7 +400,7 @@ export default function Home() {
             <div className="teach-main">
             <article className="card teach-card">
               <div className="card-topline"><span className="step-tag">TEACH</span><span className="tiny-live"><i className={recording ? "active" : ""} />{recording ? "REC" : "READY"}</span></div>
-              {bridgeOnline && <div className={`sync-check ${status.teleop?.ready ? "sync-check-ready" : ""}`}><span className="sync-check-led" /><div><strong>{status.teleop?.ready ? "Leader and follower aligned" : status.teleop?.worst_joint ? `Align ${status.teleop.worst_joint.replaceAll("_", " ")}` : "Waiting for fresh arm readings"}</strong><small>{status.teleop?.ready ? "Within the 25-unit tracking limit" : typeof status.teleop?.worst === "number" ? `Largest gap ${status.teleop.worst.toFixed(1)} / 25 units · move the leader or follower by hand until all joint gaps are under 25` : "Both arms must report fresh readings before teleop can start"}</small></div><span className="sync-motor-count">L {status.hardware?.teleop?.motors_ok ?? 0}/{status.hardware?.teleop?.motors_total ?? 6} · F {status.hardware?.follower?.motors_ok ?? 0}/{status.hardware?.follower?.motors_total ?? 6}</span></div>}
+              {bridgeOnline && <div className={`sync-check ${status.teleop?.ready ? "sync-check-ready" : ""}`}><span className="sync-check-led" /><div><strong>{status.teleop?.ready ? "Leader and follower aligned" : status.teleop?.worst_joint ? `${status.teleop.worst_joint.replaceAll("_", " ")} is apart` : "Waiting for fresh arm readings"}</strong><small>{status.teleop?.ready && !status.estop?.engaged && (status.hardware?.teleop?.motors_ok ?? 0) === 6 && (status.hardware?.follower?.motors_ok ?? 0) === 6 ? "Within the 25-unit tracking limit" : syncHint}</small></div><span className="sync-motor-count">L {status.hardware?.teleop?.motors_ok ?? 0}/{status.hardware?.teleop?.motors_total ?? 6} · F {status.hardware?.follower?.motors_ok ?? 0}/{status.hardware?.follower?.motors_total ?? 6}</span></div>}
               <label className="field-label" htmlFor="skill-description">Name it</label>
               <textarea id="skill-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Block into the bin" rows={2} disabled={recording || pending} />
               <div className="teach-bottom">
