@@ -2,51 +2,50 @@
 import bisect
 import math
 
-MAX_SPEED = 18.0  # Calibrated normalized units/s, not degrees or Cartesian speed.
+MAX_SPEED = 18.0  # Native motor units/s: degrees for arm joints in degree mode.
 MAX_COMMAND_STEP = .90
-MEASURED_BOUND_TOLERANCE = 2.0  # Small endpoint overshoot in normalized encoder feedback.
-# The resting shoulder is observed at -103.96; imported demonstrations already
-# permit four units of endpoint overshoot. Include a small readout margin only
-# for this joint. This never widens the recorded-target range.
-MEASURED_JOINT_TOLERANCE = {'shoulder_lift.pos': 4.25}
+MEASURED_BOUND_TOLERANCE = 2.0
 
 JOINTS = tuple(f"{j}.pos" for j in (
     "shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"))
 
 
-def validate_pose(pose, *, measured=False):
+DEFAULT_BOUNDS = {k: (0.0 if k == "gripper.pos" else -100.0, 100.0) for k in JOINTS}
+
+
+def validate_pose(pose, *, measured=False, bounds=None):
     if not isinstance(pose, dict) or set(pose) != set(JOINTS):
         raise ValueError("Require exactly the six calibrated SO-101 joints")
     for key, value in pose.items():
-        low = 0 if key == "gripper.pos" else -100
-        tolerance = MEASURED_JOINT_TOLERANCE.get(key, MEASURED_BOUND_TOLERANCE) if measured else 0
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low-tolerance <= value <= 100+tolerance:
+        low, high = (bounds or DEFAULT_BOUNDS)[key]
+        tolerance = MEASURED_BOUND_TOLERANCE if measured else 0
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low-tolerance <= value <= high+tolerance:
             if measured:
-                raise ValueError(f"Measured {key}={value} is outside feedback bounds [{low-tolerance:g}, {100+tolerance:g}]; command targets remain [{low}, 100]")
-            raise ValueError(f"{key} is outside calibrated normalized bounds [{low}, 100]")
+                raise ValueError(f"Measured {key}={value} is outside feedback bounds [{low-tolerance:g}, {high+tolerance:g}]; command targets remain [{low:g}, {high:g}]")
+            raise ValueError(f"{key} is outside calibrated motor bounds [{low:g}, {high:g}]")
 
 
-def approach_demo_start(frames, measured, speed=MAX_SPEED):
+def approach_demo_start(frames, measured, speed=MAX_SPEED, *, bounds=None):
     """Prepend a local, speed-limited approach; never alter the taught path."""
-    MotionProgram(frames, speed)
-    validate_pose(measured, measured=True)
+    MotionProgram(frames, speed, bounds=bounds)
+    validate_pose(measured, measured=True, bounds=bounds)
     gap = max(abs(measured[k]-frames[0]['pose'][k]) for k in JOINTS)
     if gap <= 5:
         return frames, 0.0
     if gap > 25:
         raise ValueError(f"Demo start is {gap:.1f} units away; bounded automatic approach limit is 25. Move closer first.")
-    anchor = {k: max(0 if k == 'gripper.pos' else -100, min(100, measured[k])) for k in JOINTS}
+    anchor = {k: max((bounds or DEFAULT_BOUNDS)[k][0], min((bounds or DEFAULT_BOUNDS)[k][1], measured[k])) for k in JOINTS}
     duration = max(abs(anchor[k]-frames[0]['pose'][k]) for k in JOINTS)/speed
     prepared = [{'t': 0.0, 'pose': anchor}] + [{'t': f['t']+duration, 'pose': dict(f['pose'])} for f in frames]
-    MotionProgram(prepared, speed)
+    MotionProgram(prepared, speed, bounds=bounds)
     return prepared, duration
 
 
-def speed_for_duration(frames, seconds=30.0, measured=None):
+def speed_for_duration(frames, seconds=30.0, measured=None, *, bounds=None):
     """Fit playback timing only; preserve every recorded motor value."""
     def duration(speed):
-        prepared, _ = approach_demo_start(frames, measured, speed) if measured is not None else (frames, 0)
-        return MotionProgram(prepared, speed).duration
+        prepared, _ = approach_demo_start(frames, measured, speed, bounds=bounds) if measured is not None else (frames, 0)
+        return MotionProgram(prepared, speed, bounds=bounds).duration
     # Avoid constructing ultra-slow programs outside the execution budget.
     low, high = 1.0, MAX_SPEED
     if duration(high) >= seconds:
@@ -75,19 +74,20 @@ def speed_for_duration(frames, seconds=30.0, measured=None):
 class MotionProgram:
     """Time interpolation, speed limit, tracking checks and finite hold lease.
 
-    Targets use LeRobot RANGE_M100_100, gripper RANGE_0_100, never radians.
+    Targets use the connected motor mode and its calibrated bounds, never radians.
     Retime each segment to preserve the joint path without slowing idle periods.
     """
-    def __init__(self, frames, speed=MAX_SPEED):
+    def __init__(self, frames, speed=MAX_SPEED, *, bounds=None):
+        self.bounds = dict(bounds or DEFAULT_BOUNDS)
         if not isinstance(frames, list) or not 2 <= len(frames) <= 18000:
             raise ValueError("A skill needs 2–18000 timestamped frames")
         if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not math.isfinite(speed) or not 0 < speed <= MAX_SPEED:
-            raise ValueError(f"Speed must be positive and at most {MAX_SPEED:g} normalized units per second")
+            raise ValueError(f"Speed must be positive and at most {MAX_SPEED:g} native motor units per second")
         self.speed = speed
         previous = -1.0
         times = [0.0]
         for i, frame in enumerate(frames):
-            validate_pose(frame.get("pose"))
+            validate_pose(frame.get("pose"), bounds=self.bounds)
             t = frame.get("t")
             if isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) or t < 0 or t <= previous:
                 raise ValueError("Frame timestamps must be finite and strictly increasing")
@@ -113,7 +113,7 @@ class MotionProgram:
         return min(elapsed, self.horizon) if self.horizon is not None else elapsed
 
     def advance_turn(self, measured, now, seconds=2):
-        validate_pose(measured, measured=True)
+        validate_pose(measured, measured=True, bounds=self.bounds)
         if self.horizon is None or self.elapsed(now) < self.horizon or self.complete:
             return False
         if max(abs(measured[k]-self.last_target[k]) for k in JOINTS) > 2:
@@ -131,7 +131,7 @@ class MotionProgram:
         return True
 
     def start(self, measured, now):
-        validate_pose(measured, measured=True)
+        validate_pose(measured, measured=True, bounds=self.bounds)
         gap = max(abs(measured[k] - self.frames[0]["pose"][k]) for k in JOINTS)
         if gap > 5:
             joint = max(JOINTS, key=lambda k: abs(measured[k]-self.frames[0]["pose"][k]))
@@ -141,7 +141,7 @@ class MotionProgram:
         self.last_target = dict(measured)
 
     def tick(self, measured, now):
-        validate_pose(measured, measured=True)
+        validate_pose(measured, measured=True, bounds=self.bounds)
         if self.started is None:
             raise ValueError("Program has not started")
         elapsed = self.elapsed(now)

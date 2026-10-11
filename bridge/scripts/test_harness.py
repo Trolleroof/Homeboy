@@ -672,6 +672,18 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'incomplete'):
             task_harness.copy_measured_skill(original)
 
+    def test_degree_demo_values_are_copied_exactly(self):
+        self.add_skill()
+        original = self.harness.catalog()[0]
+        bounds = dict(task_harness.DEFAULT_BOUNDS, **{'shoulder_lift.pos': (-104.66, 104.66)})
+        for sample in original['demonstration_evidence']['samples']:
+            sample['measured']['shoulder_lift.pos'] = -103.956
+        copied = task_harness.copy_measured_skill(original, bounds)
+        self.assertEqual(copied['copy_audit']['bounded_values'], 0)
+        self.assertEqual(copied['frames'][0]['pose']['shoulder_lift.pos'], -103.956)
+        program = MotionProgram(copied['frames'], bounds=bounds)
+        program.start(copied['frames'][0]['pose'], 0)
+
     def test_do_approaches_demo_start_without_manual_alignment_or_model(self):
         self.add_skill()
         self.recorder.robot.bus.positions = {k.removesuffix('.pos'): 8.0 for k in JOINTS}

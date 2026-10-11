@@ -38,9 +38,32 @@ def wants_insights(body):
     return bool(INSIGHT_WORDS.search(body or ""))
 
 
+def project_lines(project):
+    """Project-wide Keewano rollup: totals, worst skills, top block reasons."""
+    if not project or not project.get("available"):
+        return []
+    agents = project.get("runs_by_agent") or {}
+    simulated = project.get("simulated_runs") or 0
+    lines = [f"Project: {project.get('total_runs', 0)} traced runs ("
+             + ", ".join(f"{n} {a.replace('_', ' ')}" for a, n in sorted(agents.items(), key=lambda x: -x[1]))
+             + (f"; {simulated} are simulator backfill" if simulated else "") + ")."]
+    judged = [s for s in project.get("skills") or [] if s.get("success_rate") is not None]
+    if judged:
+        lines.append("Success by skill, worst first: " + ", ".join(
+            f"{s['skill_id']}{' (sim)' if s.get('simulated') else ''} {s['success_rate']:.0%} of {s['decided_runs']}"
+            for s in judged[:4]) + ".")
+    blocked = list((project.get("blocked_reasons") or {}).items())[:3]
+    if blocked:
+        lines.append("Top block reasons: " + ", ".join(f"{r} x{n}" for r, n in blocked) + ".")
+    return lines
+
+
 def insights_text(result, limit=1400):
     """Plain-text Keewano summary for SMS or speech."""
     lines = ["Homeboy run history from Keewano. Read-only; no motion requested."]
+    # A question that names no taught skill ("which skill fails most?") is about the project.
+    if not result.get("query_matched_video"):
+        lines += project_lines(result.get("project"))
     skills = result.get("skills") or []
     if not skills:
         lines.append("No approved taught skills yet.")

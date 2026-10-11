@@ -525,6 +525,24 @@ class Recorder:
                 raise RuntimeError("Fresh motor and camera readings are required for the next turn")
             return program.advance_turn(self._last_robot_pos, time.monotonic())
 
+    def motion_bounds(self):
+        """Use the bus normalization mode, rather than assuming all joints are ±100."""
+        from motion_program import DEFAULT_BOUNDS
+        bounds = dict(DEFAULT_BOUNDS)
+        bus = getattr(self.robot, "bus", None)
+        for name, motor in (getattr(bus, "motors", {}) or {}).items():
+            if getattr(getattr(motor, "norm_mode", None), "name", "") == "DEGREES":
+                calibration = bus.calibration[name]
+                resolution = bus.model_resolution_table[motor.model] - 1
+                half_range = (calibration.range_max-calibration.range_min)*180/resolution
+                bounds[f"{name}.pos"] = (-half_range, half_range)
+        return bounds
+
+    def motion_units(self):
+        bus = getattr(self.robot, "bus", None)
+        return {f"{name}.pos": ("degrees" if getattr(getattr(motor, "norm_mode", None), "name", "") == "DEGREES" else "normalized")
+                for name, motor in (getattr(bus, "motors", {}) or {}).items()}
+
     def motor_telemetry(self):
         """Read cached observations only; the control loop retains bus ownership."""
         with self.lock:
@@ -537,12 +555,12 @@ class Recorder:
                 motor = calibration.get(name)
                 value = positions.get(f"{name}.pos")
                 if motor is not None and isinstance(value, (float, int)) and np.isfinite(value):
-                    # Inverse LeRobot RANGE_M100_100 about the calibrated midpoint;
-                    # STS3215 degrees normalization uses 4095 encoder intervals.
+                    # Convert according to the actual bus mode; degree readings are already angles.
                     span = motor.range_max - motor.range_min
                     if span > 0:
-                        radians[name] = float(value) / 100 * span * np.pi / 4095
-            return {"source": "recorder_cache", "units": "LeRobot normalized joint units",
+                        radians[name] = (float(value)*np.pi/180 if self.motion_units().get(f"{name}.pos") == "degrees"
+                                         else float(value)/100*span*np.pi/4095)
+            return {"source": "recorder_cache", "units": "native LeRobot motor units", "joint_units": self.motion_units(), "bounds": self.motion_bounds(),
                     "positions": positions, "age_s": age, "radians": radians, "gripper": positions.get("gripper.pos"),
                     "hardware_available": not self.offline and age is not None and 0 <= age < .5 and len(positions) == 6,
                     "temperatures": dict(self._follower_temps),
@@ -578,7 +596,7 @@ class Recorder:
 
     def start_autonomy(self, frames, cancel, speed=None, *, short_turns=False):
         from motion_program import MotionProgram, JOINTS, MAX_SPEED
-        program = MotionProgram(frames, MAX_SPEED if speed is None else speed)
+        program = MotionProgram(frames, MAX_SPEED if speed is None else speed, bounds=self.motion_bounds())
         if short_turns:
             program.horizon = min(program.duration, 2.0)
         with self.hw_lock:

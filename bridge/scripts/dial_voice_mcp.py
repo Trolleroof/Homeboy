@@ -205,7 +205,7 @@ def willow_run_history(question: str, ctx: Context) -> dict:
                "recent_runs": [{k: v for k, v in r.items() if k not in ("entity", "harness_run_id")} for r in (s.get("keewano") or {}).get("recent_runs", [])]}
               for s in result.get("skills", [])]
     return {"available": True, "spoken_summary": insights_text(result, limit=900), "skills": skills,
-            "query_matched_video": result.get("query_matched_video"), "robot_moved": False}
+            "project": result.get("project"), "query_matched_video": result.get("query_matched_video"), "robot_moved": False}
 
 if __name__ == "__main__":
     import uvicorn

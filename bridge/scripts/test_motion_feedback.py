@@ -1,6 +1,6 @@
 """Feedback tolerance must never widen recorded targets or command steps."""
 import unittest
-from motion_program import JOINTS, MotionProgram, validate_pose, approach_demo_start, speed_for_duration, MAX_SPEED
+from motion_program import JOINTS, MotionProgram, validate_pose, approach_demo_start, speed_for_duration, MAX_SPEED, DEFAULT_BOUNDS
 
 
 class FeedbackTests(unittest.TestCase):
@@ -62,18 +62,19 @@ class FeedbackTests(unittest.TestCase):
         for value in (-101.14, 101.14):
             with self.assertRaises(ValueError):
                 validate_pose(dict(pose, **{'shoulder_lift.pos': value}))
-        for value in (-104.26, 104.26, float('nan'), True):
+        for value in (-102.01, 102.01, float('nan'), True):
             with self.assertRaises(ValueError):
                 validate_pose(dict(pose, **{'shoulder_lift.pos': value}), measured=True)
 
-    def test_observed_shoulder_rest_is_feedback_only_and_returns_inward(self):
+    def test_degree_shoulder_uses_actual_calibration_and_returns_inward(self):
         pose = {k: 0.0 for k in JOINTS}
         measured = dict(pose, **{'shoulder_lift.pos': -103.956043956})
         start = dict(pose, **{'shoulder_lift.pos': -100})
-        validate_pose(measured, measured=True)
+        bounds = dict(DEFAULT_BOUNDS, **{"shoulder_lift.pos": (-104.66, 104.66)})
+        validate_pose(measured, bounds=bounds)
         with self.assertRaises(ValueError):
-            validate_pose(measured)
-        program = MotionProgram([{'t': 0, 'pose': start}, {'t': 1, 'pose': start}])
+            validate_pose(dict(measured, **{"shoulder_lift.pos": -105}), bounds=bounds)
+        program = MotionProgram([{'t': 0, 'pose': start}, {'t': 1, 'pose': start}], bounds=bounds)
         program.start(measured, 0)
         for i in range(1, 30):
             target = program.tick(measured, i/30)

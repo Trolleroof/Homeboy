@@ -152,5 +152,38 @@ class TraceTests(unittest.TestCase):
         self.assertNotIn("protocol_event", [e["data"] for e in events])
 
 
+class ProjectOverviewTests(unittest.TestCase):
+    ROWS = [
+        [["robot_harness", 10], ["claude_code", 2]],
+        [[6]],
+        [["pick_cup", "sim-pick_cup", "success", 4], ["pick_cup", "sim-pick_cup", "failure", 2],
+         ["episode-2", "abc123", "success", 1], [None, None, "blocked", 3], ["wave", "sim-wave", "success", 5]],
+        [["no_confident_match", 3], ["deadline", 5]],
+        [["Bash", 1]],
+    ]
+
+    def overview(self):
+        rows = iter(self.ROWS)
+        with patch.dict("os.environ", {"KEEWANO_PROJECT_ID": "p", "KEEWANO_EMAIL": "e", "KEEWANO_PAT": "t"}), \
+                patch.object(run_analytics, "_connect"), patch.object(run_analytics, "_query", side_effect=lambda _sql: next(rows)):
+            return run_analytics.project_overview()
+
+    def test_rollup_ranks_worst_skill_first_and_flags_simulated(self):
+        o = self.overview()
+        self.assertEqual((o["total_runs"], o["simulated_runs"]), (12, 6))
+        self.assertEqual([s["skill_id"] for s in o["skills"]], ["pick_cup", "wave", "episode-2"])
+        self.assertEqual(o["skills"][0]["success_rate"], .67)
+        self.assertTrue(o["skills"][0]["simulated"])
+        self.assertFalse(o["skills"][2]["simulated"])
+        self.assertEqual(list(o["blocked_reasons"]), ["deadline", "no_confident_match"])
+
+    def test_unavailable_keewano_is_reported_not_raised(self):
+        with patch.dict("os.environ", {"KEEWANO_PROJECT_ID": "", "KEEWANO_EMAIL": "", "KEEWANO_PAT": ""}):
+            self.assertFalse(run_analytics.project_overview()["available"])
+        with patch.dict("os.environ", {"KEEWANO_PROJECT_ID": "p", "KEEWANO_EMAIL": "e", "KEEWANO_PAT": "t"}), \
+                patch.object(run_analytics, "_connect", side_effect=OSError("down")):
+            self.assertFalse(run_analytics.project_overview()["available"])
+
+
 if __name__ == "__main__":
     unittest.main()

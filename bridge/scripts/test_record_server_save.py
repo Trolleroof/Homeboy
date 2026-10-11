@@ -15,6 +15,18 @@ from record_server import Recorder, IDLE, PENDING, ESTOPPED, extend_video_camera
 
 
 class EpisodeSaveTests(unittest.TestCase):
+    def test_degree_mode_bounds_come_from_encoder_calibration(self):
+        from lerobot.motors import Motor, MotorNormMode, MotorCalibration
+        recorder = Recorder.__new__(Recorder)
+        recorder.robot = SimpleNamespace(bus=SimpleNamespace(
+            motors={'shoulder_lift': Motor(2, 'sts3215', MotorNormMode.DEGREES),
+                    'gripper': Motor(6, 'sts3215', MotorNormMode.RANGE_0_100)},
+            calibration={'shoulder_lift': MotorCalibration(2, 0, 0, 866, 3247)},
+            model_resolution_table={'sts3215': 4096}))
+        self.assertAlmostEqual(recorder.motion_bounds()['shoulder_lift.pos'][1], 104.659340659)
+        self.assertEqual(recorder.motion_bounds()['gripper.pos'], (0, 100))
+        self.assertEqual(recorder.motion_units()['shoulder_lift.pos'], 'degrees')
+
     def recorder(self, frames, error=None):
         recorder = Recorder.__new__(Recorder)
         recorder.lock = threading.RLock()
