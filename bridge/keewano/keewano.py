@@ -5,6 +5,7 @@ session). Every event is Name(value); context events (RunTrigger, Skill...)
 go first so later events carry them without joins.
 """
 
+import hashlib
 import json
 import os
 import time
@@ -40,7 +41,6 @@ def _events_hash():
 
 
 EVENTS_HASH = _events_hash()
-_REGISTERED_MARKER = Path.home() / ".cache" / "homeboy-keewano" / f"registered-{EVENTS_HASH}"
 
 
 def _load_env_local():
@@ -78,11 +78,14 @@ def _post(path, body, timeout=5):
 
 def register(force=False):
     """Register the custom event list once per hash (repeats are a server no-op)."""
-    if not force and _REGISTERED_MARKER.exists():
+    # Per schema AND per key: switching to a new project must register again.
+    key_tag = hashlib.sha256(api_key().encode()).hexdigest()[:12]
+    marker = Path.home() / ".cache" / "homeboy-keewano" / f"registered-{EVENTS_HASH}-{key_tag}"
+    if not force and marker.exists():
         return None
     result = _post("custom", {"customEventsHash": EVENTS_HASH, "eventTypes": CUSTOM_EVENTS})
-    _REGISTERED_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    _REGISTERED_MARKER.touch()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
     return result
 
 
