@@ -2,7 +2,7 @@
 
 ## What changed
 
-The installed Ollama `embeddinggemma` model was version 1, which only embedded text labels. Google’s current EmbeddingGemma 2 supports native video input. Willow now uses version 2 locally for video-only search.
+The installed Ollama `embeddinggemma` model was version 1, which only embedded text labels. Google’s current EmbeddingGemma 2 supports native video input. Homeboy now uses version 2 locally for video-only search.
 
 Official reference: https://ai.google.dev/gemma/docs/embeddinggemma/multimodal-embeddinggemma-with-sentence-transformers
 
@@ -24,7 +24,7 @@ No paid inference API is used. Hugging Face is needed for the initial model down
 
 ## Observed results
 
-Dataset: `willow/speedhacks-wrist-v1`, episode 2, 309 frames, 10.3 seconds.
+Dataset: `homeboy/speedhacks-wrist-v1`, episode 2, 309 frames, 10.3 seconds.
 
 Frame timestamps in seconds: 0, 1.2875, 2.575, 3.8625, 5.15, 6.4375, 7.725, 9.0125.
 

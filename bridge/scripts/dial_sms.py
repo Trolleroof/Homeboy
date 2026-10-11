@@ -1,4 +1,4 @@
-"""Dial SMS -> existing Willow harness, with local operator execution.
+"""Dial SMS -> existing Homeboy harness, with local operator execution.
 
 Run with .sms-venv/bin/python bridge/scripts/dial_sms.py. The event stream is
 presence-based; this sidecar is for the local hackathon demo, not a durable
@@ -55,7 +55,7 @@ class Bridge:
         parsed = urllib.parse.urlsplit(url)
         if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost")
                 or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
-            raise ValueError("Willow bridge must use a loopback HTTP origin")
+            raise ValueError("Homeboy bridge must use a loopback HTTP origin")
         self.url = url.rstrip("/")
 
     async def call(self, action="status", **payload):
@@ -72,9 +72,9 @@ class Bridge:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             try:
-                message = json.load(error).get("error", "Willow refused the request")
+                message = json.load(error).get("error", "Homeboy refused the request")
             except (ValueError, AttributeError):
-                message = "Willow refused the request"
+                message = "Homeboy refused the request"
             raise ValueError(message) from None
 
 
@@ -190,13 +190,13 @@ class Adapter:
                 await self.confirm(event_id, sender, body)
                 return
             if body.upper() == "HELP":
-                await self.reply(event_id, sender, "Text a taught task, e.g. 'Put the orange block in the bin'. Willow replies with a RUN token. A local operator must check the workcell before motion.")
+                await self.reply(event_id, sender, "Text a taught task, e.g. 'Put the orange block in the bin'. Homeboy replies with a RUN token. A local operator must check the workcell before motion.")
                 return
             if not 1 <= len(body) <= 500:
                 await self.reply(event_id, sender, "Please send one taught task in 1–500 characters.")
                 return
             if self.state.active():
-                await self.reply(event_id, sender, "Willow already has a pending request. Confirm it or wait for it to finish/expire.")
+                await self.reply(event_id, sender, "Homeboy already has a pending request. Confirm it or wait for it to finish/expire.")
                 return
             request_id = uuid.uuid4().hex
             with self.state.db:
@@ -213,12 +213,12 @@ class Adapter:
             except ValueError as error:
                 self.state.update(request_id, status="done")
                 self.state.event(request_id, "request_refused", reason=str(error)[:256])
-                await self.reply(request_id+":refused", sender, "Willow cannot plan this request: "+str(error), request_id)
+                await self.reply(request_id+":refused", sender, "Homeboy cannot plan this request: "+str(error), request_id)
             except Exception as error:
                 # Ambiguous HTTP failures remain pending and are reconciled by
                 # request_id on poll. Never repeat a planning command.
                 self.state.event(request_id, "planning_acceptance_unknown", error_class=type(error).__name__)
-                await self.reply(request_id+":unknown", sender, "Willow's planner connection is unavailable. No motion was requested. Checking the request; please wait.", request_id)
+                await self.reply(request_id+":unknown", sender, "Homeboy's planner connection is unavailable. No motion was requested. Checking the request; please wait.", request_id)
 
     async def confirm(self, event_id, sender, body):
         match = re.fullmatch(r"RUN\s+([A-F0-9]{8})", body.upper())
@@ -233,7 +233,7 @@ class Adapter:
                 raise ValueError("Confirmation refused")
         except Exception as error:
             self.state.event(row["id"], "confirmation_unknown", error_class=type(error).__name__)
-            await self.reply(event_id, sender, "Could not confirm this plan. No motion was requested. Check Willow locally.", row["id"])
+            await self.reply(event_id, sender, "Could not confirm this plan. No motion was requested. Check Homeboy locally.", row["id"])
             return
         self.state.update(row["id"], status="confirmed")
         self.state.event(row["id"], "confirmation_received", plan_id=row["plan_id"], dial_event_id=event_id)
@@ -256,7 +256,7 @@ class Adapter:
                 # Still expire pending consent during a bridge outage.
                 for row in rows:
                     if row["status"] != "executing" and self.clock() > (row["expires"] or row["created"]+150):
-                        await self.finish(row, "Willow's request expired while the bridge was unavailable. Check Willow locally before sending another request.", "request_expired")
+                        await self.finish(row, "Homeboy's request expired while the bridge was unavailable. Check Homeboy locally before sending another request.", "request_expired")
                 return
             plan, run = status.get("plan") or {}, status.get("run") or {}
             for row in rows:
@@ -268,9 +268,9 @@ class Adapter:
                     if not status.get("active"):
                         verdict = run.get("result") or "unknown"
                         message = {"success": "Camera reports task success; operator verification is still required.",
-                                   "failure": "Camera reports task failure. Willow will not retry automatically.",
+                                   "failure": "Camera reports task failure. Homeboy will not retry automatically.",
                                    "uncertain": "Task outcome is uncertain. Ask the operator to inspect the block.",
-                                   "blocked": "Willow stopped or refused execution. Ask the operator to inspect the evidence."}.get(verdict, "Execution outcome is unavailable. Check Willow locally; do not assume completion.")
+                                   "blocked": "Homeboy stopped or refused execution. Ask the operator to inspect the evidence."}.get(verdict, "Execution outcome is unavailable. Check Homeboy locally; do not assume completion.")
                         message += " Run: "+run["id"]+"."
                         if self.result_url:
                             message += " "+self.result_url+"?"+urllib.parse.urlencode({"run_id": run["id"], "request_id": row["id"]})
@@ -278,7 +278,7 @@ class Adapter:
                                           evidence_file=run.get("evidence_file"), operator_confirmed=False)
                     continue
                 if row["status"] == "executing":
-                    await self.finish(row, "Willow's execution trace is no longer available in the live bridge. Check the saved evidence locally; outcome unknown.", "execution_trace_lost")
+                    await self.finish(row, "Homeboy's execution trace is no longer available in the live bridge. Check the saved evidence locally; outcome unknown.", "execution_trace_lost")
                     continue
                 if row["status"] == "planning":
                     if same_run and not status.get("active") and plan.get("request_id") == row["id"]:
@@ -295,13 +295,13 @@ class Adapter:
                     elif same_run and not status.get("active"):
                         await self.finish(row, "No executable taught skill matched, or planning was blocked. Teach and approve this exact task, then try again.", "no_match")
                     elif self.clock()-row["created"] > 150:
-                        await self.finish(row, "Planning timed out or was replaced. No motion was requested. Check Willow locally.", "planning_timeout")
+                        await self.finish(row, "Planning timed out or was replaced. No motion was requested. Check Homeboy locally.", "planning_timeout")
                     continue
                 if (plan.get("request_id") != row["id"] or plan.get("id") != row["plan_id"]
                         or plan.get("sha256") != row["motion_hash"]):
                     await self.finish(row, "The pending plan was replaced or the bridge restarted. Text the task again.", "plan_replaced")
                 elif self.clock() >= row["expires"]:
-                    await self.finish(row, "The confirmation window expired. Text the task again; Willow did not start motion from SMS.", "request_expired")
+                    await self.finish(row, "The confirmation window expired. Text the task again; Homeboy did not start motion from SMS.", "request_expired")
                 elif row["status"] == "awaiting_confirmation" and plan.get("sms_confirmed") is True:
                     # Recover after an ambiguous confirmation HTTP response or
                     # a crash between bridge acceptance and the SQLite update.
@@ -315,7 +315,7 @@ async def main(args):
     if not key:
         raise ValueError("No Dial login. Run: dial auth login YOUR_EMAIL --coupon DIAL_FOR_SPEEDHACKS")
     from dial_sdk import DialClient, DialConfig, SendMessageParams
-    async with DialClient(DialConfig(api_key=key, user_agent="willow-sms/0.1")) as dial:
+    async with DialClient(DialConfig(api_key=key, user_agent="homeboy-sms/0.1")) as dial:
         numbers = await dial.list_numbers()
         configured = os.environ.get("DIAL_NUMBER_ID", "")
         configured_number = os.environ.get("DIAL_NUMBER", "")
@@ -325,8 +325,8 @@ async def main(args):
         if len(candidates) != 1:
             raise ValueError("Set DIAL_NUMBER_ID to one ready SMS number on this account")
         number = candidates[0]
-        bridge = Bridge(os.environ.get("WILLOW_BRIDGE_URL", "http://127.0.0.1:8621"))
-        allowed = {x.strip() for x in os.environ.get("WILLOW_SMS_ALLOWED_SENDERS", "").split(",") if x.strip()}
+        bridge = Bridge(os.environ.get("HOMEBOY_BRIDGE_URL", "http://127.0.0.1:8621"))
+        allowed = {x.strip() for x in os.environ.get("HOMEBOY_SMS_ALLOWED_SENDERS", "").split(",") if x.strip()}
         if args.check:
             status = await bridge.call()
             print(json.dumps({"dial_authenticated": True, "number_id": number.id, "number": number.number,
@@ -338,7 +338,7 @@ async def main(args):
         try:
             async def send(to, body):
                 await dial.send_message(SendMessageParams(to=to, from_number_id=number.id, body=body, channel="sms"))
-            adapter = Adapter(state, bridge, send, number.number, allowed, os.environ.get("WILLOW_SMS_RESULT_URL", ""))
+            adapter = Adapter(state, bridge, send, number.number, allowed, os.environ.get("HOMEBOY_SMS_RESULT_URL", ""))
             async def poll():
                 while True:
                     await adapter.poll()

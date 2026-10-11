@@ -2,14 +2,14 @@
 
 Run `npm install` and `npm run dev` in this folder, then open http://127.0.0.1:3217.
 
-This Next.js application owns its bridge at `/api/bridge`. It starts the project recorder in `../bridge/scripts/record_server.py` on localhost:8621. The SUDS dashboard on port 3117 is no longer used. Stop other robot controllers and health pollers before connecting.
+This Next.js application owns its bridge at `/api/bridge`. It starts the project recorder in `../bridge/scripts/record_server.py` on localhost:8621. Stop other robot controllers and health pollers before connecting.
 
-The Python interpreter defaults to `/Users/nikhi/SUDS/.venv/bin/python`, reusing the installed LeRobot dependencies and existing leader/follower calibration files. Set `WILLOW_PYTHON` in `.env.local` to use another compatible environment. The controller source and hardware configuration belong to this project under `bridge/`.
+The Python interpreter defaults to `python3`. Point it at an environment with LeRobot installed and calibrated leader/follower arms. Set `HOMEBOY_PYTHON` in `.env.local` to use another compatible environment. The controller source and hardware configuration belong to this project under `bridge/`.
 
 ## Teaching
 
 1. Plug in and power both arms. Align their poses and clear the follower's path.
-2. Click **Start teaching**. Willow starts the recorder if necessary, checks live joint readings and the wrist camera, aligns the follower to the leader over two seconds, and waits for recording to produce frames.
+2. Click **Start teaching**. Homeboy starts the recorder if necessary, checks live joint readings and the wrist camera, aligns the follower to the leader over two seconds, and waits for recording to produce frames.
 3. Move the leader through the task. Click **Stop teaching**, then save or discard. Stopping releases torque at the current pose; support the arm as needed. The recorder automatically saves pending takes after 120 seconds.
 4. Saving automatically indexes the recorded video. Describe what happened or appeared in the clip to retrieve it. Existing clips have an **Index video** button. If indexing fails, the recording remains saved and you can retry.
 
@@ -19,8 +19,8 @@ The emergency STOP cuts torque without commanding a return pose. After a stop, i
 
 - Leader/follower serial ports: `bridge/config/arms.json`.
 - Camera mapping: `bridge/config/cameras.json`. This project currently records only `wrist=0`.
-- Episodes, joint actions, and H.264 video: `~/.cache/huggingface/lerobot/willow/speedhacks-wrist-v1`.
-- Video vectors and optional display metadata: `datasets/willow_skills.sqlite3`.
+- Episodes, joint actions, and H.264 video: `~/.cache/huggingface/lerobot/homeboy/speedhacks-wrist-v1`.
+- Video vectors and optional display metadata: `datasets/homeboy_skills.sqlite3`.
 - Recorder log: `bridge/logs/recorder.log`.
 - Native video embedding service: localhost:8622, auto-started on the first indexing/search request. Its Python environment is separate from LeRobot.
 - Set up that environment from the project root: `uv venv --python 3.12 .embedding-venv`, then `uv pip install --python .embedding-venv/bin/python -r bridge/embedding-requirements.txt`.

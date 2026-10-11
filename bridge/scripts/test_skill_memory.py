@@ -19,8 +19,8 @@ class MemoryTests(unittest.TestCase):
         with self.memory.connect() as db:
             db.execute("CREATE TABLE skills (repo_id TEXT, episode_index INTEGER, description TEXT, embedding TEXT)")
             db.execute("CREATE TABLE video_embeddings (repo_id TEXT, episode_index INTEGER, embedding TEXT, model TEXT, revision TEXT)")
-            db.execute("INSERT INTO skills VALUES (?,?,?,?)", ("willow/speedhacks-wrist-v1", 2, "Orange block in bin", None))
-            db.execute("INSERT INTO video_embeddings VALUES (?,?,?,?,?)", ("willow/speedhacks-wrist-v1", 2, json.dumps([1., 0.]), MODEL, REVISION))
+            db.execute("INSERT INTO skills VALUES (?,?,?,?)", ("homeboy/speedhacks-wrist-v1", 2, "Orange block in bin", None))
+            db.execute("INSERT INTO video_embeddings VALUES (?,?,?,?,?)", ("homeboy/speedhacks-wrist-v1", 2, json.dumps([1., 0.]), MODEL, REVISION))
         self.embedding = patch("skill_memory.embed", return_value=[1., 0.])
         self.embedding.start()
 
@@ -67,8 +67,8 @@ class MemoryTests(unittest.TestCase):
     def test_ambiguous_vector_match_is_rejected(self):
         other = {**self.skill, "id": "episode-3"}
         with self.memory.connect() as db:
-            db.execute("INSERT INTO skills VALUES (?,?,?,?)", ("willow/speedhacks-wrist-v1", 3, "Orange block in bin", None))
-            db.execute("INSERT INTO video_embeddings VALUES (?,?,?,?,?)", ("willow/speedhacks-wrist-v1", 3, json.dumps([1., 0.]), MODEL, REVISION))
+            db.execute("INSERT INTO skills VALUES (?,?,?,?)", ("homeboy/speedhacks-wrist-v1", 3, "Orange block in bin", None))
+            db.execute("INSERT INTO video_embeddings VALUES (?,?,?,?,?)", ("homeboy/speedhacks-wrist-v1", 3, json.dumps([1., 0.]), MODEL, REVISION))
         result = self.memory.search(self.skill["description"], [self.skill, other], self.contract)
         self.assertFalse(result["safe_match"])
         self.assertEqual(result["matches"], [])

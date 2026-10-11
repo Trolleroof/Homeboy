@@ -1,8 +1,8 @@
-# Willow Dial SMS adapter
+# Homeboy Dial SMS adapter
 
 Dial carries the existing **teach once, recall by text** workflow. The Python
 sidecar listens to official `message.received` events, submits the text to
-Willow's existing Codex harness, sends an expiring RUN token, and reports the
+Homeboy's existing Codex harness, sends an expiring RUN token, and reports the
 result of the locally supervised execution. No new motion planner is added.
 
 ## Sponsor access and coupon
@@ -45,7 +45,7 @@ between Dial numbers. Outbound texts to regular phones require business 10DLC
 registration. For a live SMS demo, use an authorized second Dial number as the
 requester, or ask the Dial table for iMessage/WhatsApp access for a later channel
 adapter. This adapter only implements SMS. A regular phone sending a request
-does not establish that Willow's SMS reply can reach it.
+does not establish that Homeboy's SMS reply can reach it.
 
 The CLI stores its key in a private local file. The adapter reads
 `~/.local/share/dial/auth.v1.json`, falling back to legacy `auth.json`, respecting
@@ -57,16 +57,16 @@ The sidecar owns its event connection; it does not need `dial listen install`.
 From the project root:
 
 ```sh
-uv venv .sms-venv --python /Users/nikhi/SUDS/.venv/bin/python
+uv venv .sms-venv --python 3.12
 uv pip install --python .sms-venv/bin/python -r bridge/sms-requirements.txt
 cp bridge/.env.example bridge/.env.local
 ```
 
-Edit the ignored `bridge/.env.local`: set `WILLOW_SMS_ALLOWED_SENDERS` to the
+Edit the ignored `bridge/.env.local`: set `HOMEBOY_SMS_ALLOWED_SENDERS` to the
 comma-separated E.164 sender numbers allowed to request this robot. For the
 hackathon SMS demo these should be authorized Dial numbers. Set `DIAL_NUMBER_ID`
 or `DIAL_NUMBER` if the account has multiple ready SMS numbers. Start the
-existing Willow UI and bridge using [HARNESS.md](HARNESS.md), then:
+existing Homeboy UI and bridge using [HARNESS.md](HARNESS.md), then:
 
 ```sh
 .sms-venv/bin/python bridge/scripts/dial_sms.py --check
@@ -79,13 +79,13 @@ The normal listener uses Dial SDK 0.40.2, verified against its installed source
 
 ## Customer and operator flow
 
-1. The authorized requester texts **Put the orange block in the bin** to Willow's Dial number.
-2. Willow plans through the same video retrieval, task contract, approval,
+1. The authorized requester texts **Put the orange block in the bin** to Homeboy's Dial number.
+2. Homeboy plans through the same video retrieval, task contract, approval,
    telemetry/example/log inspection and bounded-program tools as the prompt UI.
    An unapproved or unsupported task gets a refusal, without motion.
 3. The requester receives the matched task and **RUN XXXXXXXX**, valid for the
    remaining plan lifetime, at most five minutes.
-4. That same sender replies with the token. Willow records consent; this does
+4. That same sender replies with the token. Homeboy records consent; this does
    not move the robot.
 5. The operator sees the SMS confirmation in the prompt panel, checks the
    original workcell and start pose, and presses **Run on robot**. The button
@@ -124,7 +124,7 @@ is presence-based and only replays short gaps within two minutes. The listener
 must stay running during the demo. Durable deployment needs a signed HTTPS
 webhook; never publicly expose the robot control endpoints.
 
-SMS returns the run ID by default. Optionally set `WILLOW_SMS_RESULT_URL` to an
+SMS returns the run ID by default. Optionally set `HOMEBOY_SMS_RESULT_URL` to an
 already verified HTTPS **read-only** result page that accepts `run_id` and
 `request_id`. This adapter does not deploy that page or publish camera media.
 Current execution evidence is snapshots and telemetry, not a newly recorded
@@ -134,7 +134,7 @@ replay video; do not claim that a phone clip was delivered.
 
 ```sh
 .sms-venv/bin/python -m unittest discover -s bridge/scripts -p 'test_dial_sms.py' -v
-/Users/nikhi/SUDS/.venv/bin/python -m unittest discover -s bridge/scripts -p 'test_*.py' -v
+"$HOMEBOY_PYTHON" -m unittest discover -s bridge/scripts -p 'test_*.py' -v
 ```
 
 Tests use realistic text requests, temporary SQLite state and fake provider /

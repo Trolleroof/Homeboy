@@ -28,7 +28,7 @@ type SkillRow = {
 function openDb(): DatabaseSync {
   const root = labelsRoot();
   mkdirSync(root, { recursive: true });
-  const dbPath = path.join(root, "willow_skills.sqlite3");
+  const dbPath = path.join(root, "homeboy_skills.sqlite3");
   const db = new DatabaseSync(dbPath);
   db.exec(`CREATE TABLE IF NOT EXISTS skills (
     repo_id TEXT NOT NULL,
@@ -148,8 +148,8 @@ export async function POST(request: Request) {
       // A nearest neighbor is only a candidate. Keep weak/ambiguous results out
       // of the consumer's recall flow until a real task dataset can calibrate
       // this conservative default. Override locally for controlled evaluation.
-      const threshold = Number(process.env.WILLOW_VIDEO_MATCH_THRESHOLD ?? 0.65);
-      const margin = Number(process.env.WILLOW_VIDEO_MATCH_MARGIN ?? 0.03);
+      const threshold = Number(process.env.HOMEBOY_VIDEO_MATCH_THRESHOLD ?? 0.65);
+      const margin = Number(process.env.HOMEBOY_VIDEO_MATCH_MARGIN ?? 0.03);
       const first = ranked[0];
       const gap = first && ranked.length > 1 ? first.score - ranked[1].score : null;
       const unambiguous = ranked.length === 1 || (gap !== null && gap >= margin);

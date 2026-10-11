@@ -34,7 +34,7 @@ Hardware is touched under `hw_lock`: the loop holds it for a tick, HTTP handlers
 take it for the length of one command. The e-stop is the one caller allowed to
 give up on the lock and write anyway.
 
-    python scripts/record_server.py --repo-id suds/pick_sponge \
+    python scripts/record_server.py --repo-id homeboy/pick_block \
         --robot-port /dev/tty.usbmodemXXXX --teleop-port /dev/tty.usbmodemYYYY \
         --camera wrist=0 --camera overhead=1
 """
@@ -81,7 +81,7 @@ def utc_timestamp() -> str:
 FULL_TURN_MOTOR = "wrist_roll"
 FULL_TURN_RANGE = (0, 4095)
 
-BOUNDARY = "suds-frame"
+BOUNDARY = "homeboy-frame"
 
 # 10 Hz: a legible commit countdown and a live delta, on an already-open socket.
 import math
@@ -1978,7 +1978,7 @@ def main() -> int:
             robot.bus.connect()
             robot.bus.disable_torque()
             if not robot.is_calibrated:
-                raise RuntimeError("Follower calibration mismatch; calibrate the arm before connecting Willow")
+                raise RuntimeError("Follower calibration mismatch; calibrate the arm before connecting Homeboy")
             try:
                 configure_at_measured_pose(robot)
             finally:

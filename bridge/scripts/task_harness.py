@@ -22,8 +22,8 @@ from skill_memory import SkillMemory
 
 ROOT = Path(__file__).resolve().parents[2]
 STORE = ROOT / "datasets" / "harness"
-DATASET = Path.home() / ".cache/huggingface/lerobot/willow/speedhacks-wrist-v1"
-MODEL = os.environ.get("WILLOW_MODEL", "gemma3:4b")
+DATASET = Path.home() / ".cache/huggingface/lerobot/homeboy/speedhacks-wrist-v1"
+MODEL = os.environ.get("HOMEBOY_MODEL", "gemma3:4b")
 MAX_PLAN_REASON = 1200
 
 
@@ -64,7 +64,7 @@ def task_contract(text):
     Novel tasks require teaching and extending this verified vocabulary first.
     """
     words = re.findall(r"[a-z]+|\d+", text.lower())
-    allowed = set("please can could would will you robot willow the a an my our your it now then and to into in on onto at up down back pick pickup lift grab take get put place set drop move carry transfer block cube orange red blue green yellow black white pink purple brown bin basket container tray table tabletop again do task for me thanks thank".split())
+    allowed = set("please can could would will you robot homeboy the a an my our your it now then and to into in on onto at up down back pick pickup lift grab take get put place set drop move carry transfer block cube orange red blue green yellow black white pink purple brown bin basket container tray table tabletop again do task for me thanks thank".split())
     if not words or any(word not in allowed for word in words):
         return None
     tokens = set(words)
@@ -144,7 +144,7 @@ class TaskHarness:
                     ready = any(m["name"] == MODEL for m in json.load(r).get("models", []))
             except Exception:
                 ready = False
-            return {"ok": True, "active": self.active, "model": os.environ.get("WILLOW_CODEX_MODEL", "Codex account default"), "model_ready": available(),
+            return {"ok": True, "active": self.active, "model": os.environ.get("HOMEBOY_CODEX_MODEL", "Codex account default"), "model_ready": available(),
                     "motion_policy": {"max_speed": MAX_SPEED, "max_command_step": MAX_COMMAND_STEP, "controller_hz": 30},
                     "vision_model": MODEL, "vision_ready": ready, "memory": self.memory.status(),
                     "hosted_calls": (self.run or {}).get("codex_calls", 0), "codex_calls": (self.run or {}).get("codex_calls", 0), "skills": skills,

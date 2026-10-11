@@ -17,8 +17,8 @@ from pydantic import BaseModel, Field
 
 MODEL_ID = "google/embeddinggemma-2"
 REVISION = "914f7f89142e33e77833254d9c9b90c3cef7303b"
-DATASET_ROOT = Path(os.environ.get("SUDS_DATASET_ROOT", "~/.cache/huggingface/lerobot")).expanduser().resolve()
-app = FastAPI(title="Willow native video embeddings")
+DATASET_ROOT = Path(os.environ.get("HOMEBOY_DATASET_ROOT", "~/.cache/huggingface/lerobot")).expanduser().resolve()
+app = FastAPI(title="Homeboy native video embeddings")
 lock = threading.Lock()
 model = None
 device = None
@@ -29,7 +29,7 @@ def load_model():
     if model is None:
         import torch
         from sentence_transformers import SentenceTransformer
-        device = os.environ.get("WILLOW_EMBED_DEVICE") or ("mps" if torch.backends.mps.is_available() else "cpu")
+        device = os.environ.get("HOMEBOY_EMBED_DEVICE") or ("mps" if torch.backends.mps.is_available() else "cpu")
         model = SentenceTransformer(
             MODEL_ID, revision=REVISION, device=device,
             config_kwargs={"audio_config": None},
@@ -85,7 +85,7 @@ def embed_video(body: VideoInput):
     # Sample only this episode's window, even when LeRobot concatenates clips.
     timestamps = [body.start + duration * i / body.max_frames for i in range(body.max_frames)]
     try:
-        with lock, tempfile.TemporaryDirectory(prefix="willow-native-video-") as tmp:
+        with lock, tempfile.TemporaryDirectory(prefix="homeboy-native-video-") as tmp:
             started = time.monotonic()
             frames = []
             digest = hashlib.sha256()

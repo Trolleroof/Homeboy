@@ -3,11 +3,11 @@ import path from "node:path";
 
 /**
  * Root under which LeRobot caches datasets, one directory per `repo_id`
- * (e.g. `<root>/nikhi/suds_sponge_pick`). Override with SUDS_DATASET_ROOT to
+ * (e.g. `<root>/nikhi/homeboy_pick`). Override with HOMEBOY_DATASET_ROOT to
  * point at a scratch copy or an external drive.
  */
 export function datasetRoot(): string {
-  const override = process.env.SUDS_DATASET_ROOT;
+  const override = process.env.HOMEBOY_DATASET_ROOT;
   if (override) return path.resolve(override.replace(/^~(?=$|\/)/, homedir()));
   return path.join(homedir(), ".cache", "huggingface", "lerobot");
 }
@@ -19,12 +19,12 @@ export function datasetRoot(): string {
  * cleanly in git.
  */
 export function labelsRoot(): string {
-  const override = process.env.SUDS_LABELS_ROOT;
+  const override = process.env.HOMEBOY_LABELS_ROOT;
   if (override) return path.resolve(override.replace(/^~(?=$|\/)/, homedir()));
   return path.resolve(process.cwd(), "..", "datasets");
 }
 
-/** `nikhi/suds_pick` -> `<labelsRoot>/nikhi__suds_pick.labels.jsonl` */
+/** `nikhi/homeboy_pick` -> `<labelsRoot>/nikhi__homeboy_pick.labels.jsonl` */
 export function labelsFile(repoId: string): string {
   return path.join(labelsRoot(), `${repoId.replace(/\//g, "__")}.labels.jsonl`);
 }

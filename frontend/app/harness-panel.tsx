@@ -54,7 +54,7 @@ export default function HarnessPanel() {
   const awaitingSMS = status?.plan?.source === "dial_sms" && !status.plan.sms_confirmed;
   return <section className="card harness-card" id="prompt">
     <div className="card-topline"><span className="step-tag">PROMPT → ACTION → CHECK</span><span className="harness-cost">CODEX PLANNING · LOCAL MOTOR CONTROL</span></div>
-    <div className="harness-heading"><div><h2>Tell Willow what to do.</h2><p>Codex retrieves a skill from vector memory and builds a motor program. Willow runs it locally, checks the camera, and remembers verified successes.</p></div><span className={`connection-pill ${motorsFresh ? "connected" : ""}`}><span className="pulse" />{motorsFresh ? "Motor readings live" : "Robot unavailable"}</span></div>
+    <div className="harness-heading"><div><h2>Tell Homeboy what to do.</h2><p>Codex retrieves a skill from vector memory and builds a motor program. Homeboy runs it locally, checks the camera, and remembers verified successes.</p></div><span className={`connection-pill ${motorsFresh ? "connected" : ""}`}><span className="pulse" />{motorsFresh ? "Motor readings live" : "Robot unavailable"}</span></div>
     {offline && <p className="harness-alert">The prompt controller is offline. Start the bridge below to import skills and plan tasks.</p>}
     <div className="harness-actions"><span>Reconnect and power both arms for physical execution.</span><button className="quiet-button" disabled={!!active || !!status?.motion.active} onClick={async () => {
       setBusy(true); setError("");

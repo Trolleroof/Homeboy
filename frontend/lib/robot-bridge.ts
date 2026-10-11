@@ -4,8 +4,8 @@ import path from "node:path";
 
 export const root = path.resolve(process.cwd(), "..", "bridge");
 export const recorderURL = "http://127.0.0.1:8621";
-const store = globalThis as unknown as { willowRecorder?: { child: ChildProcess | null; log: string[]; starting: boolean } };
-const state = store.willowRecorder ??= { child: null, log: [], starting: false };
+const store = globalThis as unknown as { homeboyRecorder?: { child: ChildProcess | null; log: string[]; starting: boolean } };
+const state = store.homeboyRecorder ??= { child: null, log: [], starting: false };
 export function config() {
   const arms = JSON.parse(fs.readFileSync(path.join(root, "config/arms.json"), "utf8"));
   const cameras = JSON.parse(fs.readFileSync(path.join(root, "config/cameras.json"), "utf8"));
@@ -42,7 +42,7 @@ export async function start(task: string) {
     const offline = ![settings.robotPort, settings.teleopPort].every(p => fs.existsSync(p));
     const processes = execFileSync("/bin/ps", ["-Ao", "pid=,command="], { encoding: "utf8" });
     if (!offline && processes.split("\n").some(line => /python[^ ]* .*\/health_server\.py(?: |$)/.test(line))) {
-      throw new Error("A robot health poller is running. Stop the SUDS dashboard and health_server.py before starting Willow; they also open the arm ports.");
+      throw new Error("A robot health poller is running. Stop any other dashboard or health poller before starting Homeboy; they also open the arm ports.");
     }
     if (!task.trim() || task.length > 200 || /[\r\n]/.test(task)) throw new Error("Use a task label of 1–200 characters on one line.");
     if (settings.robotPort === settings.teleopPort) throw new Error("Leader and follower require different ports.");
@@ -56,8 +56,8 @@ export async function start(task: string) {
     }
     try { const r = await fetch(`${recorderURL}/status`, { signal: AbortSignal.timeout(500) }); if (r.ok) throw new Error("Another recorder already owns port 8621."); }
     catch (error) { if ((error as Error).message.includes("already owns")) throw error; }
-    const python = process.env.WILLOW_PYTHON ?? "/Users/nikhi/SUDS/.venv/bin/python";
-    const args = [path.join(root, "scripts/record_server.py"), "--port", "8621", "--repo-id", "willow/speedhacks-wrist-v1", "--task", task,
+    const python = process.env.HOMEBOY_PYTHON ?? "python3";
+    const args = [path.join(root, "scripts/record_server.py"), "--port", "8621", "--repo-id", "homeboy/speedhacks-wrist-v1", "--task", task,
       "--robot-port", settings.robotPort, "--teleop-port", settings.teleopPort, "--fps", "30", "--sync-seconds", "2", "--auto-estop", "--commit-seconds", "120"];
     for (const camera of settings.cameras) args.push("--camera", `${camera.name}=${camera.index}`);
     if (offline) args.push("--offline");

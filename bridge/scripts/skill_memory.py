@@ -35,7 +35,7 @@ def cosine(a, b):
 
 class SkillMemory:
     def __init__(self, path=None):
-        self.path = Path(path) if path else Path(os.environ.get("SUDS_LABELS_ROOT", str(ROOT/"datasets"))).expanduser()/"willow_skills.sqlite3"
+        self.path = Path(path) if path else Path(os.environ.get("HOMEBOY_LABELS_ROOT", str(ROOT/"datasets"))).expanduser()/"homeboy_skills.sqlite3"
 
     @contextmanager
     def connect(self):
@@ -77,7 +77,7 @@ class SkillMemory:
             if "skills" in tables and "video_embeddings" in tables:
                 for row in db.execute("SELECT s.*, v.embedding AS video_vector, v.model, v.revision FROM skills s LEFT JOIN video_embeddings v USING(repo_id,episode_index)"):
                     skill = candidates.get(f'episode-{row["episode_index"]}')
-                    if not skill or row["repo_id"] != "willow/speedhacks-wrist-v1":
+                    if not skill or row["repo_id"] != "homeboy/speedhacks-wrist-v1":
                         continue
                     if row["video_vector"] and row["model"] == MODEL and row["revision"] == REVISION:
                         matches.append({"skill_id": skill["id"], "score": cosine(query, json.loads(row["video_vector"])), "source": "demonstration_video"})

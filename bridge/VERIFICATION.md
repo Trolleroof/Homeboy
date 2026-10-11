@@ -16,8 +16,8 @@ The Speedhacks bridge was tested against the connected SO-101 leader and followe
 - TypeScript check passed. The app and camera were inspected in the browser; the guide is on the left and the full wrist view is visible.
 - Frontend restart successfully rediscovered the project recorder using its persisted PID and verified command line.
 
-The test exposed and fixed an old SUDS health-poller conflict and a tracking-stop trigger that was incorrectly active while teleop was disengaged. Project stop/estop behavior now releases torque without commanding a return pose.
+The test exposed and fixed a conflict with a second health poller holding the arm ports and a tracking-stop trigger that was incorrectly active while teleop was disengaged. Project stop/estop behavior now releases torque without commanding a return pose.
 
 These are brief stationary recording and engagement checks. They do not establish task completion, a full-range leader sweep, long-run reliability, or learned skill generalization. Two explicitly labeled diagnostic demonstrations remain in the local library.
 
-Final state: recorder online on 8621, arms connected and disengaged, wrist feed active. Frontend on 3217. Ollama provides EmbeddingGemma on 11434. The old SUDS dashboard is not required or running.
+Final state: recorder online on 8621, arms connected and disengaged, wrist feed active. Frontend on 3217. Ollama provides EmbeddingGemma on 11434. No other dashboard or health poller is required or running.

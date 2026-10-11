@@ -1,4 +1,4 @@
-# Willow prompt-to-action harness
+# Homeboy prompt-to-action harness
 
 This version adds Codex tool calling and shared vector retrieval, a bounded SO-101 trajectory interpreter, scene checks, outcome evidence, and a prompting box to the existing Skillbook. Open **http://127.0.0.1:3217/#prompt** for the current running instance.
 
@@ -6,13 +6,13 @@ This is a fixed-workcell taught-skill harness. Codex builds programs from valida
 
 ## Run it
 
-The project uses the existing calibrated LeRobot installation at `/Users/nikhi/SUDS/.venv/bin/python`. From `frontend/`, run `npm install` if needed, then `npx next dev -p 3217 -H 127.0.0.1`. The bridge is managed by **Connect bridge** and listens on 127.0.0.1:8621. Port 3000 is currently used by a different application.
+Set `HOMEBOY_PYTHON` to a Python environment with LeRobot installed and the arms calibrated. From `frontend/`, run `npm install` if needed, then `npx next dev -p 3217 -H 127.0.0.1`. The bridge is managed by **Connect bridge** and listens on 127.0.0.1:8621. Port 3000 is currently used by a different application.
 
-Install Codex CLI and run `codex login` with your ChatGPT account. The harness launches `codex app-server --stdio`, uses an ephemeral thread, and dispatches native `item/tool/call` requests. The installed 0.154.0 CLI and account login were checked on this Mac. `WILLOW_CODEX_MODEL` optionally overrides the account default model. This follows the [official app-server protocol](https://learn.chatgpt.com/docs/app-server); dynamic tools are experimental and protocol changes may require updating this client.
+Install Codex CLI and run `codex login` with your ChatGPT account. The harness launches `codex app-server --stdio`, uses an ephemeral thread, and dispatches native `item/tool/call` requests. The installed 0.154.0 CLI and account login were checked on this Mac. `HOMEBOY_CODEX_MODEL` optionally overrides the account default model. This follows the [official app-server protocol](https://learn.chatgpt.com/docs/app-server); dynamic tools are experimental and protocol changes may require updating this client.
 
-The existing native EmbeddingGemma 2 server must be running on localhost:8622. The library's **Index video** action starts it automatically. Index the taught episode's pixels through the library before planning. Native video retrieval never falls back to labels or prompt embeddings. It uses the existing `datasets/willow_skills.sqlite3` database (`SUDS_LABELS_ROOT` overrides its directory), pinned model/revision and cosine vectors. Task contracts, approval, a 0.65 similarity threshold and 0.03 ambiguity margin gate executable matches. These thresholds are demo settings, not calibrated guarantees.
+The existing native EmbeddingGemma 2 server must be running on localhost:8622. The library's **Index video** action starts it automatically. Index the taught episode's pixels through the library before planning. Native video retrieval never falls back to labels or prompt embeddings. It uses the existing `datasets/homeboy_skills.sqlite3` database (`HOMEBOY_LABELS_ROOT` overrides its directory), pinned model/revision and cosine vectors. Task contracts, approval, a 0.65 similarity threshold and 0.03 ambiguity margin gate executable matches. These thresholds are demo settings, not calibrated guarantees.
 
-Ollama must be running on localhost:11434. `ollama pull gemma3:4b` installs the default local vision/language model; it was installed during this task. The download is about 3.3 GB. `WILLOW_MODEL` can name another locally installed compatible vision model, but it needs the same checks before physical use. The Ollama API uses [structured JSON output and base64 images](https://docs.ollama.com/capabilities/structured-outputs).
+Ollama must be running on localhost:11434. `ollama pull gemma3:4b` installs the default local vision/language model; it was installed during this task. The download is about 3.3 GB. `HOMEBOY_MODEL` can name another locally installed compatible vision model, but it needs the same checks before physical use. The Ollama API uses [structured JSON output and base64 images](https://docs.ollama.com/capabilities/structured-outputs).
 
 If USB ports are missing, **Connect bridge** starts an explicit offline planning bridge without opening buses or cameras. When both arms are plugged in, pressing it again restarts that offline bridge with the configured hardware. Neither a running bridge nor configured serial-port names establish hardware readiness. Live six-motor readings and a fresh wrist frame are required before execution. If a controller was already running with stale device handles, stop it through `/api/bridge/daemon/stop` before reconnecting.
 
@@ -46,14 +46,14 @@ Skills, run events and images are written under `datasets/harness/`, outside the
 Run focused tests from the project root:
 
 ```sh
-/Users/nikhi/SUDS/.venv/bin/python -m unittest discover -s bridge/scripts -p 'test_*.py' -v
-/Users/nikhi/SUDS/.venv/bin/python bridge/scripts/check_local_model.py
+"$HOMEBOY_PYTHON" -m unittest discover -s bridge/scripts -p 'test_*.py' -v
+"$HOMEBOY_PYTHON" bridge/scripts/check_local_model.py
 ```
 
 The first command uses fake motor buses and cameras while exercising the actual recorder/interpreter/harness, vector-store behavior and JSON-RPC dispatch. `check_local_model.py` tests the local task-contract gate and vision verifier; it makes no Codex calls. The production planner uses Codex. Run the current hardware-free real integration check with:
 
 ```sh
-/Users/nikhi/SUDS/.venv/bin/python bridge/scripts/check_codex.py
+"$HOMEBOY_PYTHON" bridge/scripts/check_codex.py
 ```
 
 It calls the signed-in Codex account and the real video vector DB, uses a temporary approved copy of the catalog, and never exposes a motor execution tool. It writes `datasets/harness/codex-check.json`; it does not approve the persistent skill.

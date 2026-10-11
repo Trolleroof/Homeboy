@@ -4,8 +4,8 @@ import path from "node:path";
 
 export const VIDEO_MODEL = "google/embeddinggemma-2";
 export const VIDEO_REVISION = "914f7f89142e33e77833254d9c9b90c3cef7303b";
-const base = process.env.WILLOW_VIDEO_EMBED_URL ?? "http://127.0.0.1:8622";
-const shared = globalThis as typeof globalThis & { willowEmbeddingStartup?: Promise<void> };
+const base = process.env.HOMEBOY_VIDEO_EMBED_URL ?? "http://127.0.0.1:8622";
+const shared = globalThis as typeof globalThis & { homeboyEmbeddingStartup?: Promise<void> };
 
 export type NativeEmbedding = {
   embedding: number[];
@@ -31,8 +31,8 @@ async function available(): Promise<boolean> {
 
 async function ensureService(): Promise<void> {
   if (await available()) return;
-  if (!shared.willowEmbeddingStartup) {
-    shared.willowEmbeddingStartup = (async () => {
+  if (!shared.homeboyEmbeddingStartup) {
+    shared.homeboyEmbeddingStartup = (async () => {
       if (base !== "http://127.0.0.1:8622") throw new Error("The configured video embedding service is unavailable.");
       const root = path.resolve(process.cwd(), "..");
       const logs = path.join(root, "bridge", "logs");
@@ -52,9 +52,9 @@ async function ensureService(): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
       throw new Error("EmbeddingGemma 2 could not start. Check bridge/logs/embedding.log.");
-    })().finally(() => { shared.willowEmbeddingStartup = undefined; });
+    })().finally(() => { shared.homeboyEmbeddingStartup = undefined; });
   }
-  await shared.willowEmbeddingStartup;
+  await shared.homeboyEmbeddingStartup;
 }
 
 export async function nativeEmbedding(kind: "text" | "video", input: Record<string, unknown>): Promise<NativeEmbedding> {

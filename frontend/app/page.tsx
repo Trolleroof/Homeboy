@@ -68,7 +68,7 @@ export default function Home() {
       if (!response.ok) return;
       const body = await response.json() as { skills?: SavedSkill[] };
       setLibrary(body.skills ?? []);
-    } catch { /* the SUDS service may still be starting */ }
+    } catch { /* the bridge service may still be starting */ }
   }, []);
 
   const indexVideo = useCallback(async (repoId: string, episodeIndex: number) => {
@@ -157,7 +157,7 @@ export default function Home() {
       }
       await new Promise((resolve) => window.setTimeout(resolve, 700));
     }
-    throw new Error("The robot bridge did not become ready. Check the local Willow bridge and device connections.");
+    throw new Error("The robot bridge did not become ready. Check the local Homeboy bridge and device connections.");
   }
 
   async function startTeaching() {
@@ -171,7 +171,7 @@ export default function Home() {
         if (!daemon.running) {
           const [arms, cameraConfig] = await Promise.all([call("config/arms"), call("config/cameras")]);
           const result = await call("daemon/start", {
-            repoId: "willow/speedhacks-wrist-v1",
+            repoId: "homeboy/speedhacks-wrist-v1",
             task: description.trim(),
             fps: 30,
             robotPort: arms.robotPort,
@@ -244,7 +244,7 @@ export default function Home() {
   async function emergencyStop() {
     setError("");
     try {
-      await call("recorder/estop", { reason: "operator stop from Willow skillbook" });
+      await call("recorder/estop", { reason: "operator stop from Homeboy skillbook" });
       skillToIndex.current = null;
       setNotice("Robot stopped. Re-arm only after checking the workspace and arm position.");
       await refreshStatus();
@@ -283,7 +283,7 @@ export default function Home() {
   return (
     <main className="app-shell">
       <aside className="rail">
-        <a className="brand" href="#top" aria-label="Willow home"><span className="brand-mark"><span /><span /><span /></span><span>willow<span className="brand-period">.</span></span></a>
+        <a className="brand" href="#top" aria-label="Homeboy home"><span className="brand-mark"><span /><span /><span /></span><span>homeboy<span className="brand-period">.</span></span></a>
         <div className="rail-label">WORKSPACE</div>
         <nav className="nav-list" aria-label="Main navigation">
           <a className="nav-item" href="#prompt"><span className="nav-icon">✳</span>Prompt robot</a>
@@ -307,7 +307,7 @@ export default function Home() {
 
         <div className="content">
           <section className="intro">
-            <div className="intro-copy"><div className="eyebrow"><span className="eyebrow-line" />YOUR ROBOT, WITH A MEMORY</div><h1>Teach it once.<br /><em>Get that time back.</em></h1><p>Show Willow a task with the leader arm. It saves the motion and video together, so your team can find the right demonstration next time.</p></div>
+            <div className="intro-copy"><div className="eyebrow"><span className="eyebrow-line" />YOUR ROBOT, WITH A MEMORY</div><h1>Teach it once.<br /><em>Get that time back.</em></h1><p>Show Homeboy a task with the leader arm. It saves the motion and video together, so your team can find the right demonstration next time.</p></div>
             <div className="intro-art" aria-hidden="true"><RobotSketch /></div>
           </section>
 
@@ -319,7 +319,7 @@ export default function Home() {
               <div className="guide-steps">
                 <div className={`guide-step ${teachStage === "ready" || teachStage === "recording" || teachStage === "save" ? "complete" : "current"}`}><span>1</span><div><strong>Describe the task</strong><p>Use a short label you’ll recognize later.</p></div></div>
                 <div className={`guide-step ${teachStage === "recording" ? "current" : teachStage === "save" ? "complete" : ""}`}><span>2</span><div><strong>Move the leader arm</strong><p>Wait for teleop to sync, then guide the follower through the task.</p></div></div>
-                <div className={`guide-step ${teachStage === "save" ? "current" : ""}`}><span>3</span><div><strong>Stop and save</strong><p>Willow keeps the motion episode and camera recording together.</p></div></div>
+                <div className={`guide-step ${teachStage === "save" ? "current" : ""}`}><span>3</span><div><strong>Stop and save</strong><p>Homeboy keeps the motion episode and camera recording together.</p></div></div>
                 <div className="guide-safety"><strong>Before you begin</strong><p>Clear the arm&apos;s path and keep a hand near the physical stop. Starting teleop can move the follower as it syncs to the leader.</p></div>
               </div>
             </aside>
@@ -355,7 +355,7 @@ export default function Home() {
             {!searchMode && library.length > 0 && <div className="results-grid">{library.map((skill) => <article className="result-card" key={`${skill.repo_id}-${skill.episode_index}`}><div className="result-title"><span className="result-icon">↗</span><div><strong>{`Recording ${skill.episode_index + 1}`}</strong><small>{skill.repo_id} · episode {skill.episode_index}</small></div><span className="library-tag">{skill.video_indexed ? "VIDEO INDEXED" : "SAVED"}</span></div><video controls preload="metadata" src={`/api/bridge/video?repo_id=${encodeURIComponent(skill.repo_id)}&path=${encodeURIComponent(skill.video_path)}#t=${skill.video_from}`} /><div className="result-foot"><span>{skill.video_indexed ? "Searchable by recorded video content" : "Video content not indexed yet"}</span><button className="quiet-button" disabled={Boolean(indexing)} onClick={() => void indexVideo(skill.repo_id, skill.episode_index)}>{indexing === `${skill.repo_id}:${skill.episode_index}` ? "Indexing video…" : skill.video_indexed ? "Reindex video" : "Index video"}</button></div></article>)}</div>}
             {!searchMode && library.length === 0 && <div className="library-empty"><span className="empty-stack">▤</span><p>Your saved demonstrations will appear here.<br />Teach a skill above to start your library.</p></div>}
           </section>
-          <footer className="page-foot"><span>WILLOW SKILLBOOK</span><span>LOCAL ROBOT DATA STAYS ON THIS MACHINE</span></footer>
+          <footer className="page-foot"><span>HOMEBOY SKILLBOOK</span><span>LOCAL ROBOT DATA STAYS ON THIS MACHINE</span></footer>
         </div>
       </section>
     </main>
