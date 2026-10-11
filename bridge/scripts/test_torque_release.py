@@ -1,8 +1,11 @@
-"""Torque-off confirmation with lost write acknowledgements."""
+"""Torque-off confirmation with lost or fault-flagged write acknowledgements."""
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from record_server import release_all_torque
+import record_server
+from record_server import read_torque_enable, release_all_torque
+
+COMM_SUCCESS, COMM_RX_TIMEOUT = 0, -3000
 
 
 class TorqueReleaseTests(unittest.TestCase):
@@ -10,32 +13,63 @@ class TorqueReleaseTests(unittest.TestCase):
         bus = Mock()
         bus.motors = {"shoulder_lift": object(), "elbow_flex": object()}
         bus.disable_torque.side_effect = [RuntimeError("ack lost"), None]
-        bus.read.side_effect = readback
         return bus
+
+    def release(self, bus, readback):
+        with patch.object(record_server, "read_torque_enable", side_effect=readback) as read:
+            release_all_torque(bus)
+        return read
 
     def test_lost_ack_with_repeated_off_readback_succeeds(self):
         bus = self.bus([0, 0])
-        release_all_torque(bus)
+        read = self.release(bus, [0, 0])
         self.assertEqual(bus.disable_torque.call_count, 2)
-        self.assertEqual(bus.read.call_count, 2)
-        bus.read.assert_called_with("Torque_Enable", "shoulder_lift", normalize=False, num_retry=3)
+        self.assertEqual(read.call_count, 2)
+        read.assert_called_with(bus, "shoulder_lift")
 
     def test_torque_on_or_inconsistent_readback_is_rejected(self):
         for readback in ([1], [0, 1], [None]):
             with self.subTest(readback=readback):
                 bus = self.bus(readback)
                 with self.assertRaisesRegex(RuntimeError, "shoulder_lift"):
-                    release_all_torque(bus)
+                    self.release(bus, readback)
                 self.assertEqual(bus.disable_torque.call_count, 2)
 
     def test_unreadable_motor_is_rejected_but_other_joints_are_attempted(self):
-        bus = self.bus(RuntimeError("read timeout"))
+        bus = self.bus(None)
         with self.assertRaisesRegex(RuntimeError, "read timeout"):
-            release_all_torque(bus)
+            self.release(bus, ConnectionError("read timeout"))
         self.assertEqual(bus.disable_torque.call_count, 2)
 
     def test_successful_ack_needs_no_fallback(self):
         bus = Mock()
         bus.motors = {"gripper": object()}
-        release_all_torque(bus)
-        bus.read.assert_not_called()
+        with patch.object(record_server, "read_torque_enable") as read:
+            release_all_torque(bus)
+        read.assert_not_called()
+
+
+class ReadTorqueEnableTests(unittest.TestCase):
+    def bus(self, value, comm, error):
+        bus = Mock()
+        bus.motors = {"shoulder_lift": Mock(id=2, model="sts3215")}
+        bus._read.return_value = (value, comm, error)
+        bus._is_comm_success.side_effect = lambda c: c == COMM_SUCCESS
+        bus._is_error.side_effect = lambda e: e != 0
+        return bus
+
+    def read(self, bus):
+        with patch("lerobot.motors.motors_bus.get_address", return_value=(40, 1)):
+            return read_torque_enable(bus, "shoulder_lift")
+
+    def test_latched_fault_flag_still_returns_value(self):
+        # 0x10: STS angle-limit fault after an out-of-range goal write.
+        self.assertEqual(self.read(self.bus(0, COMM_SUCCESS, 0x10)), 0)
+
+    def test_comm_failure_is_fatal(self):
+        with self.assertRaises(ConnectionError):
+            self.read(self.bus(0, COMM_RX_TIMEOUT, 0))
+
+
+if __name__ == "__main__":
+    unittest.main()

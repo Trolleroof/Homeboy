@@ -1881,6 +1881,25 @@ COMMANDS = {
 }
 
 
+def read_torque_enable(bus, name):
+    """Raw Torque_Enable that tolerates a latched fault bit in the status byte.
+
+    lerobot raises on any nonzero status byte even when the packet arrived
+    intact. A motor with a latched fault (e.g. 0x10 angle limit) still applies
+    and reports Torque_Enable correctly, so only a comm failure is fatal here.
+    """
+    from lerobot.motors.motors_bus import get_address
+
+    motor = bus.motors[name]
+    addr, length = get_address(bus.model_ctrl_table, motor.model, "Torque_Enable")
+    value, comm, error = bus._read(addr, length, motor.id, num_retry=3, raise_on_error=False)
+    if not bus._is_comm_success(comm):
+        raise ConnectionError(f"Torque_Enable read on {name}: {bus.packet_handler.getTxRxResult(comm)}")
+    if bus._is_error(error):
+        log.warning("%s reports status fault %#04x while reading Torque_Enable", name, error)
+    return value
+
+
 def release_all_torque(bus):
     """Try every joint; confirm a lost write acknowledgement with readback."""
     failures = []
@@ -1890,9 +1909,10 @@ def release_all_torque(bus):
         except Exception as error:
             try:
                 # A motor can apply the write even when its acknowledgement is
-                # lost. Require two fresh off readings before accepting it.
+                # lost or carries a fault flag. Require two fresh off readings
+                # before accepting it.
                 for _ in range(2):
-                    value = bus.read("Torque_Enable", name, normalize=False, num_retry=3)
+                    value = read_torque_enable(bus, name)
                     if value != 0:
                         raise RuntimeError(f"Torque_Enable readback is {value!r}, expected 0")
             except Exception as read_error:
@@ -1906,10 +1926,19 @@ def release_all_torque(bus):
 def configure_at_measured_pose(robot):
     """Native configure enables torque; overwrite stale goals before it does."""
     release_all_torque(robot.bus)
-    present = robot.bus.sync_read("Present_Position", num_retry=3)
+    present = robot.bus.sync_read("Present_Position", normalize=False, num_retry=3)
     if not isinstance(present, dict) or set(present) != set(robot.bus.motors) or not all(np.isfinite(v) for v in present.values()):
         raise RuntimeError("Not all follower motors responded during configuration")
-    robot.bus.sync_write("Goal_Position", present)
+    # A joint resting a few ticks past its calibrated limit (shoulder_lift
+    # folded onto its rest) would get an out-of-range goal, which latches the
+    # STS angle fault (0x10) and makes every later reply look like a failure.
+    goal = {}
+    for name, value in present.items():
+        cal = robot.bus.calibration[name]
+        goal[name] = int(min(max(value, cal.range_min), cal.range_max))
+        if goal[name] != value:
+            log.info("%s rests at %d, outside calibrated %d..%d; seeding goal %d", name, value, cal.range_min, cal.range_max, goal[name])
+    robot.bus.sync_write("Goal_Position", goal, normalize=False)
     try:
         robot.configure()
     except Exception:
