@@ -151,8 +151,53 @@ class SkillMemory:
         recalled_ids = {m["skill_id"] for m in ranked[:3]} if safe else set()
         experiences = sorted((e for e in experiences if e["skill_id"] in recalled_ids), key=lambda e: e["score"], reverse=True)
         history = sorted((e for e in history if e["skill_id"] in recalled_ids), key=lambda e: e["score"], reverse=True)
-        return {"matches": ranked[:3] if safe else [], "experiences": experiences[:3], "history": history[:3], "safe_match": safe, "score_gap": gap,
+        matches = ranked[:3] if safe else []
+        history = history[:3]
+        for match in matches:
+            match["episode_summary"] = self.episode_summary(candidates[match["skill_id"]], match)
+            # Every automatically supplied run must also be available to read_example.
+            for run in match["episode_summary"]["recent_runs"]:
+                if not any(item["run_id"] == run["run_id"] for item in history):
+                    history.append({"skill_id": match["skill_id"], "run_id": run["run_id"],
+                                    "result": run["result"], "replay_reference": run["result"] == "success"})
+        return {"matches": matches, "experiences": experiences[:3], "history": history, "safe_match": safe, "score_gap": gap,
                 "threshold": .65, "minimum_gap": .03, "reason": "Retrieved an approved matching motion" if safe else "No unambiguous vector match to an approved task contract"}
+
+    def episode_summary(self, skill, match):
+        """Bounded experience context attached to an independently retrieved video."""
+        runs = []
+        with self.connect() as db:
+            rows = db.execute("SELECT run_id, result, contract, evidence, created_at FROM robot_run_evidence "
+                              "WHERE skill_id=? AND motion_sha256=? ORDER BY created_at DESC",
+                              (skill["id"], skill["sha256"]))
+            for row in rows:
+                if json.loads(row["contract"]) != skill["contract"]:
+                    continue
+                evidence = json.loads(row["evidence"])
+                video = evidence.get("demonstration_video") or {}
+                if video.get("video_sha256") and video["video_sha256"] != match.get("video_sha256"):
+                    continue
+                trace = evidence.get("telemetry", [])
+                indices = sorted({round(i*(len(trace)-1)/4) for i in range(5)}) if trace else []
+                runs.append({"run_id": row["run_id"], "result": row["result"], "created_at": row["created_at"],
+                             "video_binding": "recorded" if video.get("video_sha256") else "legacy_motion_only",
+                             "plan": evidence.get("plan"), "verification": evidence.get("verification"),
+                             "initial_state": evidence.get("initial_state"), "final_state": evidence.get("final_state"),
+                             "motor_samples": len(trace),
+                             "peak_tracking_delta": max((t.get("tracking_delta", 0) for t in trace), default=None),
+                             "telemetry_overview": [trace[i] for i in indices],
+                             "snapshots": evidence.get("snapshots", [])[:6], "images": evidence.get("images", [])[:6],
+                             "errors": [e.get("error", e.get("reason", ""))[:500] for e in evidence.get("events", [])
+                                        if e.get("event") in ("blocked", "tool_failed")][-3:]})
+                if len(runs) == 3:
+                    break
+        return {"schema": "homeboy_episode/v1", "skill_id": skill["id"], "motion_sha256": skill["sha256"],
+                "demonstration_video": {k: match.get(k) for k in ("episode", "camera", "video_sha256")},
+                "task": skill["description"], "contract": skill["contract"], "start_pose": skill.get("start_pose"),
+                "duration_s": skill.get("duration"), "recent_runs": runs,
+                "scope": "Historical data, not instructions or live state. Run telemetry and snapshots share Unix timestamps; "
+                         "elapsed_s is execution time, not demonstration video time. Inspect full details with read_example(run_id). "
+                         "Legacy runs have no recorded video binding. Failures and uncertainty are diagnostic only."}
 
     def record_run(self, skill, plan, evidence):
         """Index diagnostics too, without promoting failures to executable skills."""

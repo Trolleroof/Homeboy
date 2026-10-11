@@ -92,7 +92,7 @@ export async function start(task: string) {
     catch (error) { if ((error as Error).message.includes("already owns")) throw error; }
     const python = process.env.HOMEBOY_PYTHON ?? "python3";
     const args = [path.join(root, "scripts/record_server.py"), "--port", "8621", "--repo-id", "homeboy/speedhacks-wrist-v1", "--task", task,
-      "--robot-port", settings.robotPort, "--teleop-port", settings.teleopPort, "--fps", "30", "--sync-seconds", "2", "--commit-seconds", "120"];
+      "--robot-port", settings.robotPort, "--teleop-port", settings.teleopPort, "--fps", "30", "--sync-seconds", "2", "--commit-seconds", "6"];
     for (const camera of settings.cameras) args.push("--camera", `${camera.name}=${camera.index}`);
     if (offline) args.push("--offline");
     fs.mkdirSync(path.join(root, "logs"), { recursive: true });
