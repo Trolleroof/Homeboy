@@ -22,10 +22,6 @@
 .dial-card-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .dial-card-heading h3 { margin:7px 0 0; color:var(--forest); font:500 25px Georgia,serif; letter-spacing:.02em; }
 .dial-card-heading p { margin:5px 0 0; }
-.dial-status-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:8px; margin-top:15px; }
-.dial-status-grid span { display:flex; align-items:center; gap:7px; padding:9px; border:1px solid var(--line); border-radius:5px; background:#fffefa; color:var(--ink-2); font-size:10px; }
-.dial-status-grid i { width:7px; height:7px; border-radius:50%; background:#bd765d; flex:none; }
-.dial-status-grid i.up { background:#91a43d; box-shadow:0 0 0 3px #eaf0cc; }
 .dial-note { margin:12px 0 0; }
 .dial-activity { padding-top:11px; border-top:1px solid var(--line); margin-top:13px; }
 .dial-activity ol { margin-bottom:0; padding-left:21px; color:var(--ink-2); font-size:11px; }
@@ -68,7 +64,6 @@ a { color: inherit; text-decoration: none; }
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 226px minmax(0, 1fr); }
 .rail { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 27px 17px 19px; background: var(--forest); color: #f3f4e8; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 1px 10px 43px; font-size: 25px; font-weight: 650; letter-spacing: -.07em; }
-.brand-period { color: var(--moss); }
 .brand-mark { width: 29px; height: 29px; position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 2px; border: 1px solid rgba(225,235,187,.35); border-radius: 50%; }
 .brand-mark span { display: block; width: 3px; border-radius: 4px; background: var(--moss); }
 .brand-mark span:nth-child(1) { height: 9px; }.brand-mark span:nth-child(2) { height: 16px; }.brand-mark span:nth-child(3) { height: 12px; }
@@ -240,6 +235,7 @@ a { color: inherit; text-decoration: none; }
 .result-title { min-height: 58px; display: flex; align-items: center; gap: 9px; padding: 9px 10px; }
 .result-icon { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: #edf1dc; color: #667c4e; }
 .result-title > div { min-width: 0; display: grid; gap: 3px; }.result-title strong { overflow: hidden; color: #3c5041; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }.result-title small { color: #99a39a; font-size: 8px; }
+.result-title .result-task { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: #2f4235; font-size: 14px; line-height: 1.25; white-space: normal; }
 .library-tag { margin-left: auto; padding: 4px 6px; border: 1px solid #e0e6cf; border-radius: 3px; color: #718552; font-size: 11px; font-weight: 800; letter-spacing: .06em; }
 .match-score { margin-left: auto; color: #6e834d; font-family: Georgia, serif; font-size: 16px; text-align: center; }.match-score small { display: block; color: #a2ab9f; font: 11px "Avenir Next", sans-serif; letter-spacing: .06em; }
 .result-card video { width: 100%; display: block; max-height: 205px; background: #233329; }.result-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; color: #909b91; font-size: 13px; }.result-foot span:last-child { letter-spacing: .06em; }
@@ -248,6 +244,7 @@ a { color: inherit; text-decoration: none; }
 .video-caption { padding: 7px 10px; border-top: 1px solid var(--line); color: #65736a; font-size: 11px; }
 .video-caption summary { cursor: pointer; color: #73826e; font-weight: 700; }
 .video-caption p { margin: 6px 0 2px; line-height: 1.5; }
+.video-caption p strong { display: block; margin-bottom: 2px; color: #73826e; }
 .result-actions { display: flex; gap: 6px; margin-left: auto; }
 .delete-take.armed { border-color: #efc3b5; background: #fff4ef; color: #a64f39; }
 .page-foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 31px; padding-top: 12px; border-top: 1px solid var(--line); color: #9ba59c; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
