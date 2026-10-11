@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Official SO-101 CAD meshes (TheRobotStudio/SO-ARM100). Too large for git.
+/public/so101/assets/*.stl

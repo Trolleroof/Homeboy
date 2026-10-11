@@ -28,7 +28,7 @@ def available():
 def run_codex(prompt, tools, dispatch, cancel, event, timeout=120):
     binary = shutil.which("codex") or str(Path.home()/".npm-global/bin/codex")
     allowed = {t["name"] for t in tools}
-    with tempfile.TemporaryDirectory(prefix="willow-codex-") as directory:
+    with tempfile.TemporaryDirectory(prefix="homeboy-codex-") as directory:
         home = Path(directory)
         auth = Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))/"auth.json"
         if auth.is_file():
@@ -85,7 +85,7 @@ def run_codex(prompt, tools, dispatch, cancel, event, timeout=120):
                 if "id" in message and "method" in message:
                     send({"id": message["id"], "error": {"code": -32601, "message": "Tool unavailable"}})
         try:
-            request("initialize", {"clientInfo": {"name": "willow_robot", "version": "1.0.0"},
+            request("initialize", {"clientInfo": {"name": "homeboy_robot", "version": "1.0.0"},
                                    "capabilities": {"experimentalApi": True}})
             send({"method": "initialized", "params": {}})
             thread = request("thread/start", {"ephemeral": True, "cwd": directory,

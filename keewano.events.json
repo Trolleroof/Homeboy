@@ -131,6 +131,14 @@
     {
       "eventName": "VerdictConfidencePct",
       "eventValueType": "uint"
+    },
+    {
+      "eventName": "HarnessRunId",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "VideoSampleHash",
+      "eventValueType": "string"
     }
   ]
 }

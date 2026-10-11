@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 MODEL_ID = "google/embeddinggemma-2"
 REVISION = "914f7f89142e33e77833254d9c9b90c3cef7303b"
 DATASET_ROOT = Path(os.environ.get("SUDS_DATASET_ROOT", "~/.cache/huggingface/lerobot")).expanduser().resolve()
-app = FastAPI(title="Willow native video embeddings")
+app = FastAPI(title="Homeboy native video embeddings")
 lock = threading.Lock()
 model = None
 device = None
@@ -85,7 +85,7 @@ def embed_video(body: VideoInput):
     # Sample only this episode's window, even when LeRobot concatenates clips.
     timestamps = [body.start + duration * i / body.max_frames for i in range(body.max_frames)]
     try:
-        with lock, tempfile.TemporaryDirectory(prefix="willow-native-video-") as tmp:
+        with lock, tempfile.TemporaryDirectory(prefix="homeboy-native-video-") as tmp:
             started = time.monotonic()
             frames = []
             digest = hashlib.sha256()
