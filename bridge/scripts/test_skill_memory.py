@@ -106,6 +106,51 @@ class MemoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.memory.record_run(self.skill, {**plan, "sha256": "different"}, self.run)
 
+    def test_video_match_automatically_supplies_bounded_episode_context(self):
+        plan = {"prompt": self.skill["description"], "sha256": "motion"}
+        for index in range(5):
+            evidence = {"id": f"failed-{index}", "result": "failure", "plan": {"reason": "Tracking diverged", "speed": 1.5},
+                        "demonstration_video": {"video_sha256": "video-2"},
+                        "telemetry": [{"at": 100+t, "elapsed_s": t/30, "tracking_delta": t} for t in range(40)],
+                        "snapshots": [{"at": 101, "frame": "during.jpg"}], "events": []}
+            self.memory.record_run(self.skill, plan, evidence)
+        found = self.memory.search(self.skill["description"], [self.skill], self.contract)
+        summary = found["matches"][0]["episode_summary"]
+        self.assertEqual(summary["demonstration_video"]["video_sha256"], "video-2")
+        self.assertEqual(len(summary["recent_runs"]), 3)
+        recent = summary["recent_runs"][0]
+        self.assertEqual(recent["run_id"], "failed-4")
+        self.assertEqual(recent["plan"]["speed"], 1.5)
+        self.assertEqual(recent["peak_tracking_delta"], 39)
+        self.assertEqual(len(recent["telemetry_overview"]), 5)
+        self.assertEqual(recent["telemetry_overview"][-1]["at"], 139)
+        self.assertEqual(recent["video_binding"], "recorded")
+        self.assertTrue({r["run_id"] for r in summary["recent_runs"]} <= {r["run_id"] for r in found["history"]})
+        # Detailed trace remains lossless and available through the existing tool path.
+        self.assertEqual(len(self.memory.read_run(recent["run_id"], self.skill)["telemetry"]), 40)
+
+    def test_episode_context_excludes_changed_motion_video_and_ambiguous_retrieval(self):
+        plan = {"prompt": self.skill["description"], "sha256": "motion"}
+        self.memory.record_run(self.skill, plan, {"id": "old-video", "result": "failure",
+                               "demonstration_video": {"video_sha256": "old"}})
+        found = self.memory.search(self.skill["description"], [self.skill], self.contract)
+        self.assertEqual(found["matches"][0]["episode_summary"]["recent_runs"], [])
+        changed = self.memory.search(self.skill["description"], [{**self.skill, "sha256": "changed"}], self.contract)
+        self.assertEqual(changed["matches"][0]["episode_summary"]["recent_runs"], [])
+        with self.memory.connect() as db:
+            db.execute("DELETE FROM video_embeddings")
+        self.assertEqual(self.memory.search(self.skill["description"], [self.skill], self.contract)["matches"], [])
+
+    def test_legacy_episode_context_marks_missing_plan_and_video_binding(self):
+        self.memory.record_run(self.skill, {"prompt": self.skill["description"], "sha256": "motion"},
+                               {"id": "legacy", "result": "uncertain"})
+        found = self.memory.search("Place the block in the bin", [self.skill], task_contract("Place the block in the bin"))
+        recent = found["matches"][0]["episode_summary"]["recent_runs"][0]
+        self.assertEqual(recent["video_binding"], "legacy_motion_only")
+        self.assertIsNone(recent["plan"])
+        self.assertEqual(recent["telemetry_overview"], [])
+        self.assertIn("legacy", {r["run_id"] for r in found["history"]})
+
 
 if __name__ == "__main__":
     unittest.main()

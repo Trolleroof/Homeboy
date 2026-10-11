@@ -508,8 +508,40 @@ class Recorder:
             program = self._autonomy
             return {"active": program is not None, "complete": bool(program and program.complete),
                     "error": self._autonomy_error,
+                    "target": dict(program.last_target) if program and program.last_target else None,
+                    "tracking_error": round(max(abs(self._last_robot_pos[k]-program.last_target[k]) for k in program.last_target), 2)
+                    if program and program.last_target and all(k in self._last_robot_pos for k in program.last_target) else None,
                     "duration_s": round(program.duration, 2) if program else None,
-                    "elapsed_s": round(time.monotonic()-program.started, 2) if program and program.started is not None else 0}
+                    "turn_end_s": program.horizon if program else None,
+                    "elapsed_s": round(program.elapsed(time.monotonic()), 2) if program else 0}
+
+    def advance_autonomy_turn(self):
+        """Only extend the recorded path after fresh, settled live feedback."""
+        with self.lock:
+            program = self._autonomy
+            if program is None or self.estop or self._autonomy_cancel.is_set():
+                raise RuntimeError("Autonomous turn stopped")
+            if time.time()-self._last_robot_pos_at > .5 or self.fresh_jpeg("wrist") is None:
+                raise RuntimeError("Fresh motor and camera readings are required for the next turn")
+            return program.advance_turn(self._last_robot_pos, time.monotonic())
+
+    def motion_bounds(self):
+        """Use the bus normalization mode, rather than assuming all joints are ±100."""
+        from motion_program import DEFAULT_BOUNDS
+        bounds = dict(DEFAULT_BOUNDS)
+        bus = getattr(self.robot, "bus", None)
+        for name, motor in (getattr(bus, "motors", {}) or {}).items():
+            if getattr(getattr(motor, "norm_mode", None), "name", "") == "DEGREES":
+                calibration = bus.calibration[name]
+                resolution = bus.model_resolution_table[motor.model] - 1
+                half_range = (calibration.range_max-calibration.range_min)*180/resolution
+                bounds[f"{name}.pos"] = (-half_range, half_range)
+        return bounds
+
+    def motion_units(self):
+        bus = getattr(self.robot, "bus", None)
+        return {f"{name}.pos": ("degrees" if getattr(getattr(motor, "norm_mode", None), "name", "") == "DEGREES" else "normalized")
+                for name, motor in (getattr(bus, "motors", {}) or {}).items()}
 
     def motor_telemetry(self):
         """Read cached observations only; the control loop retains bus ownership."""
@@ -523,12 +555,12 @@ class Recorder:
                 motor = calibration.get(name)
                 value = positions.get(f"{name}.pos")
                 if motor is not None and isinstance(value, (float, int)) and np.isfinite(value):
-                    # Inverse LeRobot RANGE_M100_100 about the calibrated midpoint;
-                    # STS3215 degrees normalization uses 4095 encoder intervals.
+                    # Convert according to the actual bus mode; degree readings are already angles.
                     span = motor.range_max - motor.range_min
                     if span > 0:
-                        radians[name] = float(value) / 100 * span * np.pi / 4095
-            return {"source": "recorder_cache", "units": "LeRobot normalized joint units",
+                        radians[name] = (float(value)*np.pi/180 if self.motion_units().get(f"{name}.pos") == "degrees"
+                                         else float(value)/100*span*np.pi/4095)
+            return {"source": "recorder_cache", "units": "native LeRobot motor units", "joint_units": self.motion_units(), "bounds": self.motion_bounds(),
                     "positions": positions, "age_s": age, "radians": radians, "gripper": positions.get("gripper.pos"),
                     "hardware_available": not self.offline and age is not None and 0 <= age < .5 and len(positions) == 6,
                     "temperatures": dict(self._follower_temps),
@@ -562,9 +594,11 @@ class Recorder:
             if self._hardware.get("follower", {}).get("temperature_status") == "fail":
                 raise RuntimeError("Follower temperature is too high")
 
-    def start_autonomy(self, frames, cancel, speed=None):
+    def start_autonomy(self, frames, cancel, speed=None, *, short_turns=False):
         from motion_program import MotionProgram, JOINTS, MAX_SPEED
-        program = MotionProgram(frames, MAX_SPEED if speed is None else speed)
+        program = MotionProgram(frames, MAX_SPEED if speed is None else speed, bounds=self.motion_bounds())
+        if short_turns:
+            program.horizon = min(program.duration, 2.0)
         with self.hw_lock:
             self.autonomy_preflight()
             observation = self._read_robot_observation()
@@ -606,7 +640,7 @@ class Recorder:
                     target = program.tick(measured, time.monotonic())
                     self.robot.send_action(target)
                     # Bounded memory append only: no embedding, model or file I/O per tick.
-                    self._autonomy_trace.append({"at": time.time(), "elapsed_s": time.monotonic()-program.started,
+                    self._autonomy_trace.append({"at": time.time(), "elapsed_s": program.elapsed(time.monotonic()),
                                                  "measured": measured, "commanded": dict(target),
                                                  "tracking_delta": tracking, "complete": program.complete})
             return observation
@@ -667,6 +701,11 @@ class Recorder:
             # pose before tracking begins; normal engage remains delta-gated.
             return self._set_engaged(True, force=True)
 
+        with self.lock:
+            if (name == "stop" and self.state in (IDLE, PENDING, SAVING, ESTOPPED)
+                    and not self.engaged and self._command is None):
+                return {"ok": True, "already": True}
+
         done = threading.Event()
         with self.lock:
             if self._autonomy is not None:
@@ -678,6 +717,8 @@ class Recorder:
             if name == "task":
                 self.task = payload.get("task") or self.task
             elif name == "record":
+                if getattr(self, "_writer_error", None):
+                    return {"ok": False, "error": f"Previous save failed; restart the bridge before recording again: {self._writer_error}"}
                 if self.state not in (IDLE, PENDING):
                     return {"ok": False, "error": f"cannot record while {self.state}"}
                 if not self.engaged or not self._control_ready:
@@ -1298,20 +1339,24 @@ class Recorder:
                 result = {"ok": False, "error": "follower control is not settled yet"}
             else:
                 if pending:
-                    self._save()
-                self._begin()
+                    result = self._save()
+                if result.get("ok"):
+                    self._begin()
         elif command == "stop":
             with self.lock:
                 self.stopped_at_utc = utc_timestamp()
-            self._rest_and_release()
+            if self.estop:
+                self._kill_torque()
+            else:
+                self._rest_and_release()
             if self.commit_seconds > 0:
                 self._pend()
             else:
-                self._save()
+                result = self._save()
         elif command == "discard":
             self._discard()
         elif command == "save":
-            self._save()
+            result = self._save()
         elif command == "calibrate_start":
             result = self._calibrate_start(payload.get("arm") or "follower")
         elif command == "calibrate_home":
@@ -1360,29 +1405,34 @@ class Recorder:
             self.last_message = f"discarded {frames} frames"
         log.info("discarded %d frames", frames)
 
-    def _save(self) -> None:
+    def _save(self) -> dict[str, Any]:
         with self.lock:
             if self.state not in (RECORDING, PENDING, SAVING):
-                return
+                return {"ok": False, "error": f"cannot save while {self.state}"}
             self.state = SAVING
             frames = self.frames
             if frames == 0 and not self.dataset.has_pending_frames():
                 self.state = IDLE
-                self.last_message = "nothing to save"
-                return
+                self.last_message = "nothing to save — no frames were recorded"
+                return {"ok": False, "error": self.last_message}
             self.last_message = "saving…"
 
         try:
-            self.dataset.save_episode()
+            save_started = time.monotonic()
+            save_recording_episode(self.dataset)
+            encoded_at = time.monotonic()
             new_ds = reopen(self.dataset)
             with self.lock:
                 self.dataset = new_ds
+            log.info("EPISODE_SAVE_TIMING %s", json.dumps({"save_s": round(encoded_at-save_started, 3),
+                     "reopen_s": round(time.monotonic()-encoded_at, 3), "frames": frames}))
         except Exception as err:  # noqa: BLE001
             with self.lock:
                 self.state = IDLE
+                self._writer_error = str(err)
                 self.last_message = f"save failed: {err}"
             log.exception("save failed")
-            return
+            return {"ok": False, "error": self.last_message}
         self._since_flush = 0
         with self.lock:
             self.saved_at_utc = utc_timestamp()
@@ -1410,6 +1460,7 @@ class Recorder:
             self.frames = 0
             self.last_message = f"saved episode {episode} ({frames} frames)"
         log.info("TRAINING_EPISODE %s", json.dumps(quality, sort_keys=True))
+        return {"ok": True, "saved": True, "episode": episode, "frames": frames}
 
     # -- calibration ----------------------------------------------------
 
@@ -1740,6 +1791,74 @@ def recv_exactly(sock: socket.socket, count: int) -> bytes:
     return b"".join(chunks)
 
 
+def save_recording_episode(dataset: LeRobotDataset) -> None:
+    """Save cameras introduced after older episodes without fabricating old video paths.
+
+    The installed LeRobot writer assumes the last old episode contains every
+    camera when choosing a new video shard. A newly added camera has no such
+    history. Hide that history only during its first video write; restore the
+    complete episode metadata immediately afterward.
+    """
+    writer = getattr(dataset, "writer", None)
+    if writer is None:
+        dataset.save_episode()
+        return
+    original = writer._save_episode_video
+
+    def save_camera(video_key, *args, **kwargs):
+        meta = dataset.meta
+        episodes = meta.episodes
+        field = f"videos/{video_key}/chunk_index"
+        new_camera = (episodes is not None and len(episodes) > 0
+                      and episodes[-1].get(field) is None and field not in (meta.latest_episode or {}))
+        if not new_camera:
+            return original(video_key, *args, **kwargs)
+        first_video = dataset.root / meta.video_path.format(video_key=video_key, chunk_index=0, file_index=0)
+        if first_video.exists():
+            raise RuntimeError(f"Cannot initialize new camera over an existing unreferenced video: {first_video}")
+        try:
+            meta.episodes = None
+            return original(video_key, *args, **kwargs)
+        finally:
+            meta.episodes = episodes
+
+    writer._save_episode_video = save_camera
+    try:
+        dataset.save_episode()
+    finally:
+        writer._save_episode_video = original
+
+
+def load_recording_episodes(root):
+    """Read local episode metadata directly, including missing older camera columns.
+
+    Avoid the HF cache/build pass on every save. Arrow unions the camera schemas
+    and uses nulls for cameras not present in older episodes.
+    """
+    import datasets
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    paths = sorted((Path(root)/"meta"/"episodes").rglob("*.parquet"))
+    if not paths:
+        raise RuntimeError("Saved episode metadata is missing")
+    combined = pa.unify_schemas([pq.read_schema(path) for path in paths])
+    schema = pa.schema([field for field in combined if not field.name.startswith("stats/")])
+    table = pa.concat_tables([pq.read_table(path, schema=schema) for path in paths])
+    return datasets.Dataset(table.replace_schema_metadata(None))
+
+
+def resume_recording(**kwargs):
+    # The installed resume API has no metadata-loader argument. Scope this
+    # local-reader adapter to resume and restore the library immediately.
+    import lerobot.datasets.dataset_metadata as metadata_module
+    original = metadata_module.load_episodes
+    metadata_module.load_episodes = load_recording_episodes
+    try:
+        return LeRobotDataset.resume(**kwargs)
+    finally:
+        metadata_module.load_episodes = original
+
+
 def reopen(dataset: LeRobotDataset) -> LeRobotDataset:
     """Close the writer (flushing metadata) and reopen for appending.
 
@@ -1748,10 +1867,10 @@ def reopen(dataset: LeRobotDataset) -> LeRobotDataset:
     """
     repo_id, root = dataset.repo_id, dataset.root
     dataset.finalize()
-    ds = LeRobotDataset.resume(
+    ds = resume_recording(
         repo_id=repo_id,
         root=root,
-        rgb_encoder=RGBEncoderConfig(vcodec="h264"),
+        rgb_encoder=RGBEncoderConfig(vcodec="h264", preset="ultrafast"),
         streaming_encoding=True,
     )
     ds.meta._metadata_buffer_size = 1
@@ -2184,10 +2303,10 @@ def main() -> int:
             # `root` is required: without it resume() would build a writer over the
             # revision-safe Hub snapshot cache, which it refuses to do. Same reason
             # as in reopen() -- and we always want the local directory anyway.
-            dataset = LeRobotDataset.resume(
+            dataset = resume_recording(
                 repo_id=args.repo_id,
                 root=dataset_root,
-                rgb_encoder=RGBEncoderConfig(vcodec="h264"),
+                rgb_encoder=RGBEncoderConfig(vcodec="h264", preset="ultrafast"),
                 streaming_encoding=True,
             )
             dataset.meta._metadata_buffer_size = 1
@@ -2212,7 +2331,7 @@ def main() -> int:
                 streaming_encoding=True,
                 # AV1 (the default) only decodes in Safari on M3 and newer; the
                 # dashboard has to play these back.
-                rgb_encoder=RGBEncoderConfig(vcodec="h264"),
+                rgb_encoder=RGBEncoderConfig(vcodec="h264", preset="ultrafast"),
             )
             dataset.meta._metadata_buffer_size = 1
             log.info("created %s", args.repo_id)

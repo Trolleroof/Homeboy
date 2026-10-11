@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "keewano"))
 import keewano  # noqa: E402
 
 # Fastest first. Every rung is at or below the controller's own limit.
-SPEED_LADDER = tuple(s for s in (3.0, 2.0, 1.5, 1.0) if s <= MAX_SPEED)
+SPEED_LADDER = tuple(s for s in (18.0, 6.0, 3.0, 2.0, 1.5, 1.0) if s <= MAX_SPEED)
 MIN_RUNS = 3
 PROVEN_RATE = .8
 BAD_RATE = .6
@@ -196,7 +196,7 @@ def speed_policy(stats):
                 "reason": "No recorded outcomes for this motion yet; using the default speed."}
     for speed in SPEED_LADDER:
         row = summary[speed]
-        if row["status"] == "bad":
+        if row["status"] == "bad" or any(s < speed and v['status'] == 'bad' for s, v in summary.items()):
             continue
         policy = "default" if speed == SPEED_LADDER[0] else "slowed_by_history"
         reason = (f"{speed:g} units/s: {row['decided_runs']} decided runs, "
@@ -312,6 +312,46 @@ def summarize(runs, video_sha256=None):
             "peak_max_tracking": max(tracking) if tracking else None, "tracking_stop_at": 8.0, "tracking_warn_at": TRACKING_WARN,
             "peak_motor_temp_c": max(temps) if temps else None,
             "last_verdicts": [r["verdict"] for r in runs]}
+
+
+def project_overview():
+    """Whole-project Keewano rollup: run counts per agent, per-skill outcomes and
+    top blocked reasons. Simulator traces (MotionHash "sim-*") are kept apart from
+    real robot runs so a demo never passes one off as the other. Never raises."""
+    if not configured():
+        return {"available": False, "reason": "Keewano query credentials are not set."}
+    try:
+        with session():
+            agents = dict(_query('SELECT "AgentKind" AS agent, count(DISTINCT user_id) AS runs FROM events '
+                                 'WHERE "AgentKind" IS NOT NULL GROUP BY agent'))
+            simulated = _query("SELECT count(DISTINCT user_id) FROM events WHERE \"MotionHash\" LIKE 'sim-%'")[0][0]
+            outcomes = _query('SELECT "SkillSelected" AS skill, "MotionHash" AS motion, "MotionVerdict" AS verdict, '
+                              'count(DISTINCT user_id) AS runs FROM events WHERE "MotionVerdict" IS NOT NULL '
+                              'GROUP BY skill, motion, verdict')
+            blocked = _query('SELECT "BlockedReason" AS reason, count(DISTINCT user_id) AS runs FROM events '
+                             'WHERE "BlockedReason" IS NOT NULL GROUP BY reason')
+            failed_tools = _query('SELECT "ToolFailed" AS tool, count(DISTINCT user_id) AS runs FROM events '
+                                  "WHERE \"AgentKind\" = 'claude_code' AND \"ToolFailed\" IS NOT NULL GROUP BY tool")
+    except Exception as error:
+        return {"available": False, "reason": f"Keewano history unavailable ({type(error).__name__})."}
+    skills = {}
+    for skill, motion, verdict, runs in outcomes:
+        if not skill:
+            continue  # blocked before any skill was selected; counted under blocked_reasons
+        row = skills.setdefault(skill, {"skill_id": skill, "simulated": str(motion or "").startswith("sim-"),
+                                        "success": 0, "failure": 0, "uncertain": 0, "blocked": 0})
+        row[verdict] = row.get(verdict, 0) + runs
+    for row in skills.values():
+        decided = row["success"] + row["failure"]
+        row["decided_runs"] = decided
+        row["success_rate"] = round(row["success"]/decided, 2) if decided else None
+    # Worst first: lowest success rate among skills with enough decided runs to judge.
+    ranked = sorted(skills.values(), key=lambda r: (r["decided_runs"] < MIN_RUNS, r["success_rate"] if r["success_rate"] is not None else 1,
+                                                    -r["failure"]))
+    total = sum(agents.values())
+    return {"available": True, "runs_by_agent": agents, "total_runs": total, "simulated_runs": simulated,
+            "skills": ranked, "blocked_reasons": dict(sorted(((r, n) for r, n in blocked if r), key=lambda x: -x[1])),
+            "claude_code_failed_tools": dict(sorted(((t, n) for t, n in failed_tools if t), key=lambda x: -x[1]))}
 
 
 def run_context(skill_id, motion_hash, video_sha256=None, with_policy=False):

@@ -4,7 +4,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from codex_robot import run_codex, tool
+from codex_robot import codex_binary, run_codex, tool
 
 
 class Sink(io.StringIO):
@@ -36,6 +36,17 @@ class Process:
 
 
 class CodexProtocolTests(unittest.TestCase):
+    def test_npm_install_wins_over_older_dashboard_path(self):
+        with patch("codex_robot.Path.is_file", return_value=True), \
+             patch("codex_robot.os.access", return_value=True), \
+             patch("codex_robot.shutil.which", return_value="/opt/homebrew/bin/codex"):
+            self.assertTrue(codex_binary().endswith("/.npm-global/bin/codex"))
+
+    def test_path_install_is_used_when_npm_install_is_missing(self):
+        with patch("codex_robot.Path.is_file", return_value=False), \
+             patch("codex_robot.shutil.which", return_value="/usr/local/bin/codex"):
+            self.assertEqual(codex_binary(), "/usr/local/bin/codex")
+
     def run_client(self, process, callback, cancel=None):
         with patch("codex_robot.subprocess.Popen", return_value=process) as spawn:
             result = run_codex("test", [tool("robot_ping", "Test", {})], callback,

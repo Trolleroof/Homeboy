@@ -295,5 +295,22 @@ class SMSTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(dial_sms.wants_insights(question), question)
 
 
+class InsightsTextTests(unittest.TestCase):
+    PROJECT = {"available": True, "total_runs": 12, "simulated_runs": 6, "runs_by_agent": {"robot_harness": 10, "claude_code": 2},
+               "skills": [{"skill_id": "pick_cup", "simulated": True, "success_rate": .67, "decided_runs": 6}],
+               "blocked_reasons": {"deadline": 5}}
+
+    def test_project_rollup_answers_questions_that_name_no_skill(self):
+        text = dial_sms.insights_text({"query_matched_video": False, "skills": [], "project": self.PROJECT})
+        self.assertIn("12 traced runs", text)
+        self.assertIn("6 are simulator backfill", text)
+        self.assertIn("pick_cup (sim) 67% of 6", text)
+        self.assertIn("deadline x5", text)
+
+    def test_matched_skill_answer_skips_project_rollup(self):
+        text = dial_sms.insights_text({"query_matched_video": True, "skills": [], "project": self.PROJECT})
+        self.assertNotIn("traced runs", text)
+
+
 if __name__ == "__main__":
     unittest.main()

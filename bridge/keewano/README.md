@@ -65,6 +65,17 @@ with Run("robot_harness", trigger="sms", intent="fetch_object") as run:
 
 Event types live in `CUSTOM_EVENTS` in `keewano.py`. The list is append-only: add a new id rather than changing an existing type. Send categories, counts and flags, never prompts, transcripts or stack traces.
 
+## Showing it in a demo
+
+```sh
+python3 bridge/keewano/demo.py                                      # live rollup + speed policy per motion
+python3 bridge/keewano/demo.py --ask "which skill fails the most?"  # the exact reply a phone gets
+```
+
+Run with the harness venv (it needs `pg8000`). Rows tagged `[sim ]` come from `simulate.py`; say so on stage.
+
+Over SMS or a Dial voice call, any message with a history word (stats, history, logs, fail, success rate, how is/did/often, why did, what happened, keewano) goes to the read-only `/harness/insights` endpoint. A question that matches a taught video gets that skill's recent runs, speed policy and failure log; any other question gets the project rollup: run counts by agent, success by skill (worst first) and top block reasons.
+
 ## Questions worth asking
 
 - "Which skill fails most, and what was RetrievalTopScore right before the failures?"
