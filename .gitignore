@@ -1,0 +1,28 @@
+# Local data and generated evidence
+/datasets/
+/checkpoints/
+/bridge/logs/
+
+# Python environments and caches
+**/__pycache__/
+*.py[cod]
+/.embedding-venv/
+/.sms-venv/
+
+# Local configuration and credentials
+.env
+.env.*
+!**/.env.example
+**/.env.local
+
+# JavaScript build and dependency output
+/frontend/node_modules/
+/frontend/.next/
+/frontend/out/
+/frontend/build/
+/frontend/*.tsbuildinfo
+/frontend/next-env.d.ts
+
+# Local browser/test artifacts
+.playwright-mcp/
+.DS_Store
