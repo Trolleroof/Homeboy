@@ -507,9 +507,9 @@ class Recorder:
             if self._hardware.get("follower", {}).get("temperature_status") == "fail":
                 raise RuntimeError("Follower temperature is too high")
 
-    def start_autonomy(self, frames, cancel):
-        from motion_program import MotionProgram, JOINTS
-        program = MotionProgram(frames)
+    def start_autonomy(self, frames, cancel, speed=None):
+        from motion_program import MotionProgram, JOINTS, MAX_SPEED
+        program = MotionProgram(frames, MAX_SPEED if speed is None else speed)
         with self.hw_lock:
             self.autonomy_preflight()
             observation = self._read_robot_observation()

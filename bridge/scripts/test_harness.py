@@ -95,6 +95,9 @@ class HarnessTests(unittest.TestCase):
         self.harness.memory = SkillMemory(Path(self.tmp.name)/"memory.sqlite3")
         self.embed = patch("skill_memory.embed", return_value=[1., 0.])
         self.embed.start()
+        # Never ship test runs to the real Keewano project, even with a key configured.
+        self.analytics = patch.dict("os.environ", {"KEEWANO_API_KEY": "", "KEEWANO_PROJECT_ID": "", "KEEWANO_EMAIL": "", "KEEWANO_PAT": ""})
+        self.analytics.start()
         self.loop_stop = threading.Event()
         self.loop = None
 
@@ -104,6 +107,7 @@ class HarnessTests(unittest.TestCase):
             self.loop.join(2)
         self.store.stop()
         self.embed.stop()
+        self.analytics.stop()
         self.tmp.cleanup()
 
     def loop_start(self):
@@ -396,6 +400,63 @@ class HarnessTests(unittest.TestCase):
             self.wait_job()
         self.assertIsNotNone(self.harness.plan)
         self.assertEqual(len(self.recorder.robot.bus.history), before)
+
+    def plan_with_policy(self, policy):
+        self.add_skill()
+        self.harness.plan = None
+        skill = self.harness.catalog()[0]
+        skill["demonstration_evidence"] = {"source": "test parquet", "measured_samples": 2,
+                    "samples": [{"measured": pose(), "recorded_action": pose()} for _ in frames()]}
+        (Path(self.tmp.name)/"skill-2.json").write_text(json.dumps(skill))
+        result ={"matches": [{"skill_id": "episode-2", "score": .9}], "history": [], "experiences": []}
+        seen = {}
+        def codex(prompt, tools, dispatch, cancel, event, timeout):
+            dispatch("retrieve_skills", {"query": "Place the orange block in the bin"})
+            dispatch("read_motor_state", {})
+            dispatch("read_example", {"skill_id": "episode-2"})
+            seen["analytics"] = dispatch("read_run_analytics", {"skill_id": "episode-2"})
+            dispatch("read_robot_logs", {})
+            try:
+                dispatch("build_motor_program", {"skill_id": "episode-2", "reason": "History-informed replay"})
+            except ValueError as error:
+                seen["error"] = str(error)
+        with patch.object(self.harness.memory, "search", return_value=result), patch.object(task_harness, "run_codex", side_effect=codex), \
+                patch.object(task_harness.run_analytics, "recommend", return_value=policy) as recommend, \
+                patch.object(task_harness.run_analytics, "export_run") as export:
+            self.harness.command("plan", {"prompt": "Place the orange block in the bin"})
+            self.wait_job()
+        recommend.assert_called_once_with("episode-2", "test")
+        export.assert_called_once()
+        return seen
+
+    def test_run_history_slows_planned_replay(self):
+        seen = self.plan_with_policy({"speed": 1.5, "policy": "slowed_by_history", "hold": False, "success_rate": .9, "reason": "3 failed fast runs"})
+        self.assertEqual(seen["analytics"]["speed"], 1.5)
+        self.assertEqual(self.harness.plan["speed"], 1.5)
+        self.assertEqual(self.harness.plan["policy"]["policy"], "slowed_by_history")
+        self.assertGreater(self.harness.plan["duration"], MotionProgram(frames()).duration)
+
+    def test_run_history_hold_blocks_plan(self):
+        seen = self.plan_with_policy({"speed": 1.0, "policy": "hold", "hold": True, "success_rate": None, "reason": "Run history shows this motion failing"})
+        self.assertIn("Run history", seen["error"])
+        self.assertIsNone(self.harness.plan)
+
+    def test_execution_uses_planned_speed(self):
+        self.add_skill()
+        self.harness.plan["speed"] = 1.5
+        self.loop_start()
+        responses = iter([({"match": True, "confidence": .95, "evidence": "Same cell"}, {}),
+                          ({"verdict": "success", "confidence": .95, "evidence": "Block in bin, released"}, {})])
+        def codex(prompt, tools, dispatch, cancel, event, timeout):
+            return dispatch("execute_motor_program", {"plan_id": "plan"})
+        with patch.object(task_harness, "local_model", side_effect=lambda *args: next(responses)), patch.object(task_harness, "run_codex", side_effect=codex), \
+                patch.object(self.harness.memory, "learn", return_value={"skill_id": "episode-2"}), \
+                patch.object(self.recorder, "start_autonomy", wraps=self.recorder.start_autonomy) as start:
+            self.harness.command("run", {"plan_id": "plan", "scene_confirmed": True})
+            self.wait_job()
+        self.assertEqual(start.call_args.args[2], 1.5)
+        self.assertEqual(self.harness.run["result"], "success")
+        self.assertIsNotNone(self.harness.run.get("max_tracking"))
 
     def test_demo_missing_or_wrong_joint_order_is_not_faked(self):
         info = {"features": {"observation.state": {"names": list(JOINTS)}}}
