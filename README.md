@@ -6,6 +6,12 @@ Homeboy is a teach-and-recall app for the SO-101 arm. you show it a task with th
 
 built at SpeedHacks (Oct 11, 2026).
 
+## demo
+
+<video src="frontend/public/fqf.mp4" controls muted playsinline width="720"></video>
+
+[watch the demo (mp4)](frontend/public/fqf.mp4)
+
 ---
 
 ## the problem
