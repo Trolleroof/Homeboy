@@ -26,3 +26,6 @@
 # Local browser/test artifacts
 .playwright-mcp/
 .DS_Store
+
+# Local agent worktrees
+/.claude/worktrees/
